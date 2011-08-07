@@ -1,0 +1,151 @@
+--- valgrind/VEX/priv/guest_amd64_toIR.c.jj	2009-10-09 12:52:07.000000000 +0200
++++ valgrind/VEX/priv/guest_amd64_toIR.c	2009-10-21 22:46:40.000000000 +0200
+@@ -14011,17 +14011,19 @@ DisResult disInstr_AMD64_WRK ( 
+    case 0xE1: /* LOOPE  disp8: decrement count, jump if count != 0 && ZF==1 */
+    case 0xE2: /* LOOP   disp8: decrement count, jump if count != 0 */
+     { /* The docs say this uses rCX as a count depending on the
+-         address size override, not the operand one.  Since we don't
+-         handle address size overrides, I guess that means RCX. */
++         address size override, not the operand one.  */
+       IRExpr* zbit  = NULL;
+       IRExpr* count = NULL;
+       IRExpr* cond  = NULL;
+       HChar*  xtra  = NULL;
+ 
+-      if (have66orF2orF3(pfx) || haveASO(pfx)) goto decode_failure;
++      if (have66orF2orF3(pfx)) goto decode_failure;
+       d64 = guest_RIP_bbstart+delta+1 + getSDisp8(delta);
+       delta++;
+-      putIReg64(R_RCX, binop(Iop_Sub64, getIReg64(R_RCX), mkU64(1)));
++      if (haveASO (pfx))
++         putIReg32(R_RCX, binop(Iop_Sub32, getIReg32(R_RCX), mkU32(1)));
++      else
++         putIReg64(R_RCX, binop(Iop_Sub64, getIReg64(R_RCX), mkU64(1)));
+ 
+       count = getIReg64(R_RCX);
+       cond = binop(Iop_CmpNE64, count, mkU64(0));
+--- valgrind/none/tests/amd64/loopnel.c.jj	2009-10-22 09:42:36.000000000 +0200
++++ valgrind/none/tests/amd64/loopnel.c	2009-10-22 09:43:07.000000000 +0200
+@@ -0,0 +1,11 @@
++#include <stdio.h>
++
++int
++main (void)
++{
++  long rcx = 0x200000005UL;
++  long rax = 5UL;
++  asm volatile ("1: addq $1, %0; loopnel 1b" : "+a" (rax), "+c" (rcx) : : "cc");
++  printf ("%ld %ld\n", rax, rcx);
++  return 0;
++}
+--- valgrind/none/tests/amd64/loopnel.vgtest.jj	2009-10-22 09:43:54.000000000 +0200
++++ valgrind/none/tests/amd64/loopnel.vgtest	2009-10-22 09:43:59.000000000 +0200
+@@ -0,0 +1 @@
++prog: loopnel
+--- valgrind/none/tests/amd64/loopnel.stdout.exp.jj	2009-10-22 09:43:28.000000000 +0200
++++ valgrind/none/tests/amd64/loopnel.stdout.exp	2009-10-22 09:43:24.000000000 +0200
+@@ -0,0 +1 @@
++10 0
+--- valgrind/none/tests/amd64/loopnel.stderr.exp.jj	2009-10-22 09:43:40.000000000 +0200
++++ valgrind/none/tests/amd64/loopnel.stderr.exp	2009-08-19 15:37:15.000000000 +0200
+@@ -0,0 +1,2 @@
++
++
+--- valgrind/none/tests/amd64/Makefile.am.jj	2009-08-19 15:37:15.000000000 +0200
++++ valgrind/none/tests/amd64/Makefile.am	2009-10-22 09:44:53.000000000 +0200
+@@ -37,6 +37,7 @@ EXTRA_DIST = \
+ 	insn_ssse3.stdout.exp insn_ssse3.stderr.exp insn_ssse3.vgtest \
+ 	jrcxz.stderr.exp jrcxz.stdout.exp jrcxz.vgtest \
+ 	looper.stderr.exp looper.stdout.exp looper.vgtest \
++	loopnel.stderr.exp loopnel.stdout.exp loopnel.vgtest \
+ 	nibz_bennee_mmap.stderr.exp nibz_bennee_mmap.stdout.exp \
+ 	nibz_bennee_mmap.vgtest \
+ 	rcl-amd64.vgtest rcl-amd64.stdout.exp rcl-amd64.stderr.exp \
+@@ -72,6 +73,7 @@ if ! VGCONF_OS_IS_DARWIN
+ 	fcmovnu \
+ 	fxtract \
+ 	looper \
++	loopnel \
+ 	jrcxz \
+ 	shrld \
+ 	slahf-amd64
+--- valgrind/none/tests/amd64/Makefile.in.jj	2009-08-19 15:43:22.000000000 +0200
++++ valgrind/none/tests/amd64/Makefile.in	2009-10-22 09:46:44.000000000 +0200
+@@ -65,6 +65,7 @@ check_PROGRAMS = amd64locked$(EXEEXT) bu
+ @VGCONF_OS_IS_DARWIN_FALSE@	fcmovnu \
+ @VGCONF_OS_IS_DARWIN_FALSE@	fxtract \
+ @VGCONF_OS_IS_DARWIN_FALSE@	looper \
++@VGCONF_OS_IS_DARWIN_FALSE@	loopnel \
+ @VGCONF_OS_IS_DARWIN_FALSE@	jrcxz \
+ @VGCONF_OS_IS_DARWIN_FALSE@	shrld \
+ @VGCONF_OS_IS_DARWIN_FALSE@	slahf-amd64
+@@ -87,8 +88,9 @@ am__EXEEXT_3 = insn_basic$(EXEEXT) insn_
+ @VGCONF_OS_IS_DARWIN_FALSE@	bug156404-amd64$(EXEEXT) \
+ @VGCONF_OS_IS_DARWIN_FALSE@	faultstatus$(EXEEXT) \
+ @VGCONF_OS_IS_DARWIN_FALSE@	fcmovnu$(EXEEXT) fxtract$(EXEEXT) \
+-@VGCONF_OS_IS_DARWIN_FALSE@	looper$(EXEEXT) jrcxz$(EXEEXT) \
+-@VGCONF_OS_IS_DARWIN_FALSE@	shrld$(EXEEXT) slahf-amd64$(EXEEXT)
++@VGCONF_OS_IS_DARWIN_FALSE@	looper$(EXEEXT) loopnel$(EXEEXT) \
++@VGCONF_OS_IS_DARWIN_FALSE@	jrcxz$(EXEEXT) shrld$(EXEEXT) \
++@VGCONF_OS_IS_DARWIN_FALSE@	slahf-amd64$(EXEEXT)
+ amd64locked_SOURCES = amd64locked.c
+ amd64locked_OBJECTS = amd64locked-amd64locked.$(OBJEXT)
+ amd64locked_LDADD = $(LDADD)
+@@ -146,6 +148,9 @@ jrcxz_LDADD = $(LDADD)
+ looper_SOURCES = looper.c
+ looper_OBJECTS = looper.$(OBJEXT)
+ looper_LDADD = $(LDADD)
++loopnel = loopnel.c
++loopnel_OBJECTS = loopnel.$(OBJEXT)
++loopnel_LDADD = $(LDADD)
+ nibz_bennee_mmap_SOURCES = nibz_bennee_mmap.c
+ nibz_bennee_mmap_OBJECTS = nibz_bennee_mmap.$(OBJEXT)
+ nibz_bennee_mmap_LDADD = $(LDADD)
+@@ -180,16 +185,16 @@ SOURCES = amd64locked.c bug127521-64.c b
+ 	fcmovnu.c fxtract.c $(insn_basic_SOURCES) $(insn_fpu_SOURCES) \
+ 	$(insn_mmx_SOURCES) $(insn_sse_SOURCES) $(insn_sse2_SOURCES) \
+ 	$(insn_sse3_SOURCES) $(insn_ssse3_SOURCES) jrcxz.c looper.c \
+-	nibz_bennee_mmap.c rcl-amd64.c redundantRexW.c shrld.c \
+-	slahf-amd64.c smc1.c ssse3_misaligned.c
++	loopnel.c nibz_bennee_mmap.c rcl-amd64.c redundantRexW.c \
++	shrld.c slahf-amd64.c smc1.c ssse3_misaligned.c
+ DIST_SOURCES = amd64locked.c bug127521-64.c bug132813-amd64.c \
+ 	bug132918.c bug137714-amd64.c bug156404-amd64.c clc.c \
+ 	faultstatus.c fcmovnu.c fxtract.c $(insn_basic_SOURCES) \
+ 	$(insn_fpu_SOURCES) $(insn_mmx_SOURCES) $(insn_sse_SOURCES) \
+ 	$(insn_sse2_SOURCES) $(insn_sse3_SOURCES) \
+-	$(insn_ssse3_SOURCES) jrcxz.c looper.c nibz_bennee_mmap.c \
+-	rcl-amd64.c redundantRexW.c shrld.c slahf-amd64.c smc1.c \
+-	ssse3_misaligned.c
++	$(insn_ssse3_SOURCES) jrcxz.c looper.c loopnel.c \
++	nibz_bennee_mmap.c rcl-amd64.c redundantRexW.c shrld.c \
++	slahf-amd64.c smc1.c ssse3_misaligned.c
+ ETAGS = etags
+ CTAGS = ctags
+ DISTFILES = $(DIST_COMMON) $(DIST_SOURCES) $(TEXINFOS) $(EXTRA_DIST)
+@@ -536,6 +541,7 @@ EXTRA_DIST = \
+ 	insn_ssse3.stdout.exp insn_ssse3.stderr.exp insn_ssse3.vgtest \
+ 	jrcxz.stderr.exp jrcxz.stdout.exp jrcxz.vgtest \
+ 	looper.stderr.exp looper.stdout.exp looper.vgtest \
++	loopnel.stderr.exp loopnel.stdout.exp loopnel.vgtest \
+ 	nibz_bennee_mmap.stderr.exp nibz_bennee_mmap.stdout.exp \
+ 	nibz_bennee_mmap.vgtest \
+ 	rcl-amd64.vgtest rcl-amd64.stdout.exp rcl-amd64.stderr.exp \
+@@ -661,6 +667,9 @@ jrcxz$(EXEEXT): $(jrcxz_OBJECTS) $(jrcxz
+ looper$(EXEEXT): $(looper_OBJECTS) $(looper_DEPENDENCIES) 
+ 	@rm -f looper$(EXEEXT)
+ 	$(LINK) $(looper_LDFLAGS) $(looper_OBJECTS) $(looper_LDADD) $(LIBS)
++loopnel$(EXEEXT): $(loopnel_OBJECTS) $(loopnel_DEPENDENCIES) 
++	@rm -f loopnel$(EXEEXT)
++	$(LINK) $(loopnel_LDFLAGS) $(loopnel_OBJECTS) $(loopnel_LDADD) $(LIBS)
+ nibz_bennee_mmap$(EXEEXT): $(nibz_bennee_mmap_OBJECTS) $(nibz_bennee_mmap_DEPENDENCIES) 
+ 	@rm -f nibz_bennee_mmap$(EXEEXT)
+ 	$(LINK) $(nibz_bennee_mmap_LDFLAGS) $(nibz_bennee_mmap_OBJECTS) $(nibz_bennee_mmap_LDADD) $(LIBS)
+@@ -708,6 +717,7 @@ distclean-compile:
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/insn_ssse3.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/jrcxz.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/looper.Po@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/loopnel.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/nibz_bennee_mmap.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/rcl-amd64.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/redundantRexW.Po@am__quote@

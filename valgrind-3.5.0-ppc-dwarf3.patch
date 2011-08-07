@@ -1,0 +1,85 @@
+--- valgrind/coregrind/m_debuginfo/d3basics.c.jj	2009-10-22 17:40:55.000000000 +0200
++++ valgrind/coregrind/m_debuginfo/d3basics.c	2009-10-23 15:44:21.948199235 +0200
+@@ -387,12 +387,8 @@ static Bool get_Dwarf_Reg( /*OUT*/Addr* 
+    if (regno == 7/*RSP*/) { *a = regs->sp; return True; }
+ #  elif defined(VGP_ppc32_linux)
+    if (regno == 1/*SP*/) { *a = regs->sp; return True; }
+-   if (regno == 31) return False;
+-   vg_assert(0);
+ #  elif defined(VGP_ppc64_linux)
+    if (regno == 1/*SP*/) { *a = regs->sp; return True; }
+-   if (regno == 31) return False;
+-   vg_assert(0);
+ #  elif defined(VGP_ppc32_aix5) || defined(VGP_ppc64_aix5)
+    vg_assert(0); /* this function should never be called */
+ #  else
+@@ -831,7 +827,12 @@ GXResult ML_(evaluate_Dwarf3_Expr) ( UCh
+          case DW_OP_call_frame_cfa:
+             if (!regs)
+                FAIL("evaluate_Dwarf3_Expr: DW_OP_call_frame_cfa but no reg info");
++#if defined(VGP_ppc32_linux) || defined(VGP_ppc64_linux)
++            /* Valgrind on ppc32/ppc64 currently doesn't use unwind info.  */
++            uw1 = *(Addr *)(regs->sp);
++#else
+             uw1 = ML_(get_CFA)(regs->ip, regs->sp, regs->fp, 0, ~(UWord) 0);
++#endif
+             if (!uw1)
+                FAIL("evaluate_Dwarf3_Expr: Could not resolve "
+                     "DW_OP_call_frame_cfa");
+--- valgrind/coregrind/m_debuginfo/readdwarf.c.jj	2009-10-22 17:40:55.000000000 +0200
++++ valgrind/coregrind/m_debuginfo/readdwarf.c	2009-10-23 15:42:17.979217217 +0200
+@@ -1778,11 +1778,11 @@ void ML_(read_debuginfo_dwarf1) ( 
+ #elif defined(VGP_ppc32_linux)
+ #  define FP_REG         1
+ #  define SP_REG         1
+-#  define RA_REG_DEFAULT 8     // CAB: What's a good default ?
++#  define RA_REG_DEFAULT 65
+ #elif defined(VGP_ppc64_linux)
+ #  define FP_REG         1
+ #  define SP_REG         1
+-#  define RA_REG_DEFAULT 8     // CAB: What's a good default ?
++#  define RA_REG_DEFAULT 65
+ #elif defined(VGP_x86_darwin)
+ #  define FP_REG         5
+ #  define SP_REG         4
+@@ -1796,7 +1796,11 @@ void ML_(read_debuginfo_dwarf1) ( 
+ #endif
+ 
+ /* the number of regs we are prepared to unwind */
+-#define N_CFI_REGS 20
++#if defined(VGP_ppc32_linux) || defined(VGP_ppc64_linux)
++# define N_CFI_REGS 72
++#else
++# define N_CFI_REGS 20
++#endif
+ 
+ /* Instructions for the automaton */
+ enum dwarf_cfa_primary_ops
+@@ -3422,12 +3426,8 @@ void ML_(read_callframe_info_dwarf3)
+    UWord  ehframe_cfsis = 0;   
+ 
+ #  if defined(VGP_ppc32_linux) || defined(VGP_ppc64_linux)
+-   if (!VG_(needs).var_info /* the tool requires it */   
+-       && !VG_(clo_read_var_info) /* the user asked for it */) {
+-      /* These targets don't use CFI-based stack unwinding, but still might
+-         need it for DW_OP_call_frame_cfa support. */
+-      return;
+-   }
++   /* These targets don't use CFI-based stack unwinding.  */
++   return;
+ #  endif
+ 
+    /* If we are reading .debug_frame after .eh_frame has been read, only
+--- valgrind/coregrind/m_stacktrace.c.jj	2009-08-19 15:37:47.000000000 +0200
++++ valgrind/coregrind/m_stacktrace.c	2009-10-23 14:57:08.734338026 +0200
+@@ -430,9 +430,9 @@ UInt VG_(get_StackTrace_wrk) ( ThreadId 
+ #           endif
+ 
+             if (0 == ip || 1 == ip) break;
+-            fp = (((UWord*)fp)[0]);
+             if (sps) sps[i] = fp; /* NB. not sp */
+             if (fps) fps[i] = fp;
++            fp = (((UWord*)fp)[0]);
+             ips[i++] = ip - 1; /* -1: refer to calling insn, not the RA */
+             if (debug)
+                VG_(printf)("     ipsF[%d]=%#08lx\n", i-1, ips[i-1]);

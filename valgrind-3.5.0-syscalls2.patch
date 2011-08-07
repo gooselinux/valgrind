@@ -1,0 +1,743 @@
+--- valgrind-3.5.0/exp-ptrcheck/h_main.c.jj	2009-08-19 09:36:41.000000000 -0400
++++ valgrind-3.5.0/exp-ptrcheck/h_main.c	2009-12-02 05:39:08.460491000 -0500
+@@ -2312,6 +2312,9 @@ static void setup_post_syscall_table ( v
+       ADD(0, __NR_open);
+       ADD(0, __NR_personality);
+       ADD(0, __NR_pipe);
++#     if defined(__NR_pipe2)
++      ADD(0, __NR_pipe2);
++#     endif
+       ADD(0, __NR_poll);
+       ADD(0, __NR_prctl);
+       ADD(0, __NR_pread64);
+--- valgrind-3.5.0/include/vki/vki-scnums-amd64-linux.h.jj	2009-12-02 05:38:21.260705000 -0500
++++ valgrind-3.5.0/include/vki/vki-scnums-amd64-linux.h	2009-12-02 05:39:08.468495000 -0500
+@@ -369,7 +369,7 @@
+ #define __NR_fallocate		285
+ #define __NR_timerfd_settime	286
+ #define __NR_timerfd_gettime	287
+-#define __NR_paccept            288
++#define __NR_accept4            288
+ #define __NR_signalfd4          289
+ #define __NR_eventfd2           290
+ #define __NR_epoll_create1      291
+--- valgrind-3.5.0/include/vki/vki-linux.h.jj	2009-12-02 05:38:21.255714000 -0500
++++ valgrind-3.5.0/include/vki/vki-linux.h	2009-12-02 05:39:08.489513000 -0500
+@@ -277,14 +277,14 @@ struct vki_timex {
+ 	int  :32; int  :32; int  :32; int  :32;
+ };
+ 
+-//#define ADJ_OFFSET		0x0001	/* time offset */
+-#define ADJ_FREQUENCY		0x0002	/* frequency offset */
+-#define ADJ_MAXERROR		0x0004	/* maximum time error */
+-#define ADJ_ESTERROR		0x0008	/* estimated time error */
+-#define ADJ_STATUS		0x0010	/* clock status */
+-#define ADJ_TIMECONST		0x0020	/* pll time constant */
+-#define ADJ_TICK		0x4000	/* tick value */
+-//#define ADJ_OFFSET_SINGLESHOT	0x8001	/* old-fashioned adjtime */
++#define VKI_ADJ_OFFSET			0x0001	/* time offset */
++#define VKI_ADJ_FREQUENCY		0x0002	/* frequency offset */
++#define VKI_ADJ_MAXERROR		0x0004	/* maximum time error */
++#define VKI_ADJ_ESTERROR		0x0008	/* estimated time error */
++#define VKI_ADJ_STATUS			0x0010	/* clock status */
++#define VKI_ADJ_TIMECONST		0x0020	/* pll time constant */
++#define VKI_ADJ_TICK			0x4000	/* tick value */
++//#define VKI_ADJ_OFFSET_SINGLESHOT	0x8001	/* old-fashioned adjtime */
+ 
+ //----------------------------------------------------------------------
+ // From linux-2.6.8.1/include/linux/times.h
+@@ -525,6 +525,7 @@ typedef struct vki_sigevent {
+ #define VKI_SYS_GETSOCKOPT	15	/* sys_getsockopt(2)		*/
+ #define VKI_SYS_SENDMSG		16	/* sys_sendmsg(2)		*/
+ #define VKI_SYS_RECVMSG		17	/* sys_recvmsg(2)		*/
++#define VKI_SYS_ACCEPT4		18	/* sys_accept4(2)		*/
+ 
+ enum vki_sock_type {
+ 	VKI_SOCK_STREAM	= 1,
+--- valgrind-3.5.0/coregrind/m_syswrap/syswrap-ppc64-linux.c.jj	2009-12-02 05:38:21.300710000 -0500
++++ valgrind-3.5.0/coregrind/m_syswrap/syswrap-ppc64-linux.c	2009-12-02 05:41:28.121027000 -0500
+@@ -484,6 +484,13 @@ PRE(sys_socketcall)
+       break;
+    }
+ 
++   case VKI_SYS_ACCEPT4: {
++     /* int accept4(int s, struct sockaddr *addr, int *addrlen, int flags); */
++      PRE_MEM_READ( "socketcall.accept4(args)", ARG2, 4*sizeof(Addr) );
++      ML_(generic_PRE_sys_accept)( tid, ARG2_0, ARG2_1, ARG2_2 );
++      break;
++   }
++
+    case VKI_SYS_SENDTO:
+      /* int sendto(int s, const void *msg, int len,
+                     unsigned int flags,
+@@ -629,7 +636,9 @@ POST(sys_socketcall)
+     break;
+ 
+   case VKI_SYS_ACCEPT:
++  case VKI_SYS_ACCEPT4:
+     /* int accept(int s, struct sockaddr *addr, int *addrlen); */
++    /* int accept4(int s, struct sockaddr *addr, int *addrlen, int flags); */
+     r = ML_(generic_POST_sys_accept)( tid, VG_(mk_SysRes_Success)(RES),
+ 				      ARG2_0, ARG2_1, ARG2_2 );
+     SET_STATUS_from_SysRes(r);
+@@ -1276,7 +1285,7 @@ const SyscallTableEntry ML_(syscall_tabl
+ // _____(__NR_olduname,          sys_olduname),           // 109
+ 
+ // _____(__NR_iopl,              sys_iopl),               // 110
+-// _____(__NR_vhangup,           sys_vhangup),            // 111
++   LINX_(__NR_vhangup,           sys_vhangup),            // 111
+ // _____(__NR_idle,              sys_idle),               // 112
+ // _____(__NR_vm86,              sys_vm86),               // 113
+    GENXY(__NR_wait4,             sys_wait4),              // 114
+@@ -1291,7 +1300,7 @@ const SyscallTableEntry ML_(syscall_tabl
+ // _____(__NR_setdomainname,     sys_setdomainname),      // 121
+    GENXY(__NR_uname,             sys_newuname),           // 122
+ // _____(__NR_modify_ldt,        sys_modify_ldt),         // 123
+-// _____(__NR_adjtimex,          sys_adjtimex),           // 124
++   LINXY(__NR_adjtimex,          sys_adjtimex),           // 124
+ 
+    GENXY(__NR_mprotect,          sys_mprotect),           // 125
+ // _____(__NR_sigprocmask,       sys_sigprocmask),        // 126
+@@ -1336,7 +1345,7 @@ const SyscallTableEntry ML_(syscall_tabl
+    LINX_(__NR_sched_get_priority_max, sys_sched_get_priority_max),// 159
+ 
+    LINX_(__NR_sched_get_priority_min, sys_sched_get_priority_min),// 160
+-// _____(__NR_sched_rr_get_interval,   sys_sched_rr_get_interval),  // 161
++   LINXY(__NR_sched_rr_get_interval,  sys_sched_rr_get_interval), // 161
+    GENXY(__NR_nanosleep,         sys_nanosleep),          // 162
+    GENX_(__NR_mremap,            sys_mremap),             // 163
+ // _____(__NR_setresuid,         sys_setresuid),          // 164
+@@ -1497,7 +1506,7 @@ const SyscallTableEntry ML_(syscall_tabl
+    LINXY(__NR_signalfd,          sys_signalfd),          // 305
+    LINXY(__NR_timerfd_create,    sys_timerfd_create),    // 306
+    LINX_(__NR_eventfd,           sys_eventfd),           // 307
+-//   LINX_(__NR_sync_file_range2,   sys_ni_syscall),       // 308
++   LINX_(__NR_sync_file_range2,  sys_sync_file_range2),  // 308
+    LINX_(__NR_fallocate,         sys_fallocate),         // 309
+ //   LINXY(__NR_subpage_prot,       sys_ni_syscall),       // 310
+    LINXY(__NR_timerfd_settime,   sys_timerfd_settime),  // 311
+@@ -1505,13 +1514,13 @@ const SyscallTableEntry ML_(syscall_tabl
+    LINXY(__NR_signalfd4,         sys_signalfd4),        // 313
+    LINX_(__NR_eventfd2,          sys_eventfd2),         // 314
+    LINXY(__NR_epoll_create1,     sys_epoll_create1),    // 315
+-   //   (__NR_dup3,              sys_ni_syscall)        // 316
++   LINXY(__NR_dup3,              sys_dup3),             // 316
+    LINXY(__NR_pipe2,             sys_pipe2),            // 317
+    LINXY(__NR_inotify_init1,     sys_inotify_init1),    // 318
+    LINXY(__NR_perf_counter_open, sys_perf_counter_open),// 319
+    LINXY(__NR_preadv,            sys_preadv),           // 320
+-   LINX_(__NR_pwritev,           sys_pwritev)           // 321
+-   //   (__NR_rt_tgsigqueueinfo, sys_ni_syscall)        // 322
++   LINX_(__NR_pwritev,           sys_pwritev),          // 321
++   LINXY(__NR_rt_tgsigqueueinfo, sys_rt_tgsigqueueinfo) // 322
+ };
+ 
+ const UInt ML_(syscall_table_size) = 
+--- valgrind-3.5.0/coregrind/m_syswrap/syswrap-linux.c.jj	2009-12-02 05:38:21.316709000 -0500
++++ valgrind-3.5.0/coregrind/m_syswrap/syswrap-linux.c	2009-12-02 05:55:43.388291000 -0500
+@@ -378,8 +378,18 @@ SysRes ML_(do_fork_clone) ( ThreadId tid
+ #define PRE(name)       DEFN_PRE_TEMPLATE(linux, name)
+ #define POST(name)      DEFN_POST_TEMPLATE(linux, name)
+ 
+-// Combine two 32-bit values into a 64-bit value
+-#define LOHI64(lo,hi)   ( ((ULong)(lo)) | (((ULong)(hi)) << 32) )
++// Macros to support 64-bit syscall args split into two 32 bit values
++#if defined(VG_LITTLEENDIAN)
++#define MERGE64(lo,hi)   ( ((ULong)(lo)) | (((ULong)(hi)) << 32) )
++#define MERGE64_FIRST(name) name##_low
++#define MERGE64_SECOND(name) name##_high
++#elif defined(VG_BIGENDIAN)
++#define MERGE64(hi,lo)   ( ((ULong)(lo)) | (((ULong)(hi)) << 32) )
++#define MERGE64_FIRST(name) name##_high
++#define MERGE64_SECOND(name) name##_low
++#else
++#error Unknown endianness
++#endif
+ 
+ /* ---------------------------------------------------------------------
+    *mount wrappers
+@@ -605,34 +615,34 @@ POST(sys_llseek)
+       POST_MEM_WRITE( ARG4, sizeof(vki_loff_t) );
+ }
+ 
+-//zz PRE(sys_adjtimex, 0)
+-//zz {
+-//zz    struct vki_timex *tx = (struct vki_timex *)ARG1;
+-//zz    PRINT("sys_adjtimex ( %p )", ARG1);
+-//zz    PRE_REG_READ1(long, "adjtimex", struct timex *, buf);
+-//zz    PRE_MEM_READ( "adjtimex(timex->modes)", ARG1, sizeof(tx->modes));
+-//zz 
+-#if 0 //zz  (avoiding warnings about multi-line comments)
+-zz #define ADJX(bit,field) 				\
+-zz    if (tx->modes & bit)					\
+-zz       PRE_MEM_READ( "adjtimex(timex->"#field")",	\
+-zz 		    (Addr)&tx->field, sizeof(tx->field))
+-#endif
+-//zz    ADJX(ADJ_FREQUENCY, freq);
+-//zz    ADJX(ADJ_MAXERROR, maxerror);
+-//zz    ADJX(ADJ_ESTERROR, esterror);
+-//zz    ADJX(ADJ_STATUS, status);
+-//zz    ADJX(ADJ_TIMECONST, constant);
+-//zz    ADJX(ADJ_TICK, tick);
+-//zz #undef ADJX
+-//zz    
+-//zz    PRE_MEM_WRITE( "adjtimex(timex)", ARG1, sizeof(struct vki_timex));
+-//zz }
+-//zz 
+-//zz POST(sys_adjtimex)
+-//zz {
+-//zz    POST_MEM_WRITE( ARG1, sizeof(struct vki_timex) );
+-//zz }
++PRE(sys_adjtimex)
++{
++   struct vki_timex *tx = (struct vki_timex *)ARG1;
++   PRINT("sys_adjtimex ( %#lx )", ARG1);
++   PRE_REG_READ1(long, "adjtimex", struct timex *, buf);
++   PRE_MEM_READ( "adjtimex(timex->modes)", ARG1, sizeof(tx->modes));
++
++#define ADJX(bit,field) 				\
++   if (tx->modes & bit)					\
++      PRE_MEM_READ( "adjtimex(timex->"#field")",	\
++		    (Addr)&tx->field, sizeof(tx->field))
++
++   ADJX(VKI_ADJ_OFFSET, offset);
++   ADJX(VKI_ADJ_FREQUENCY, freq);
++   ADJX(VKI_ADJ_MAXERROR, maxerror);
++   ADJX(VKI_ADJ_ESTERROR, esterror);
++   ADJX(VKI_ADJ_STATUS, status);
++   ADJX(VKI_ADJ_TIMECONST, constant);
++   ADJX(VKI_ADJ_TICK, tick);
++#undef ADJX
++
++   PRE_MEM_WRITE( "adjtimex(timex)", ARG1, sizeof(struct vki_timex));
++}
++
++POST(sys_adjtimex)
++{
++   POST_MEM_WRITE( ARG1, sizeof(struct vki_timex) );
++}
+ 
+ PRE(sys_ioperm)
+ {
+@@ -1167,14 +1177,24 @@ POST(sys_eventfd2)
+    }
+ }
+ 
+-// 64-bit version.
+ PRE(sys_fallocate)
+ {
+    *flags |= SfMayBlock;
++#if VG_WORDSIZE == 4
++   PRINT("sys_fallocate ( %ld, %ld, %lld, %lld )",
++         ARG1, ARG2, MERGE64(ARG3,ARG4), MERGE64(ARG5,ARG6));
++   PRE_REG_READ6(long, "fallocate",
++                 int, fd, int, mode,
++                 unsigned, MERGE64_FIRST(offset), unsigned, MERGE64_SECOND(offset),
++                 unsigned, MERGE64_FIRST(len), unsigned, MERGE64_SECOND(len));
++#elif VG_WORDSIZE == 8
+    PRINT("sys_fallocate ( %ld, %ld, %lld, %lld )",
+          ARG1, ARG2, (Long)ARG3, (Long)ARG4);
+    PRE_REG_READ4(long, "fallocate",
+                  int, fd, int, mode, vki_loff_t, offset, vki_loff_t, len);
++#else
++#  error Unexpected word size
++#endif
+    if (!ML_(fd_allowed)(ARG1, "fallocate", tid, False))
+       SET_STATUS_Failure( VKI_EBADF );
+ }
+@@ -1286,19 +1306,19 @@ POST(sys_tgkill)
+ PRE(sys_fadvise64)
+ {
+    PRINT("sys_fadvise64 ( %ld, %lld, %lu, %ld )",
+-         ARG1, LOHI64(ARG2,ARG3), ARG4, ARG5);
++         ARG1, MERGE64(ARG2,ARG3), ARG4, ARG5);
+    PRE_REG_READ5(long, "fadvise64",
+-                 int, fd, vki_u32, offset_low, vki_u32, offset_high,
++                 int, fd, vki_u32, MERGE64_FIRST(offset), vki_u32, MERGE64_SECOND(offset),
+                  vki_size_t, len, int, advice);
+ }
+ 
+ PRE(sys_fadvise64_64)
+ {
+    PRINT("sys_fadvise64_64 ( %ld, %lld, %lld, %ld )",
+-         ARG1, LOHI64(ARG2,ARG3), LOHI64(ARG4,ARG5), ARG6);
++         ARG1, MERGE64(ARG2,ARG3), MERGE64(ARG4,ARG5), ARG6);
+    PRE_REG_READ6(long, "fadvise64_64",
+-                 int, fd, vki_u32, offset_low, vki_u32, offset_high,
+-                 vki_u32, len_low, vki_u32, len_high, int, advice);
++                 int, fd, vki_u32, MERGE64_FIRST(offset), vki_u32, MERGE64_SECOND(offset),
++                 vki_u32, MERGE64_FIRST(len), vki_u32, MERGE64_SECOND(len), int, advice);
+ }
+ 
+ /* ---------------------------------------------------------------------
+@@ -2271,6 +2291,21 @@ PRE(sys_sched_get_priority_min)
+    PRE_REG_READ1(long, "sched_get_priority_min", int, policy);
+ }
+ 
++PRE(sys_sched_rr_get_interval)
++{
++   PRINT("sys_sched_rr_get_interval ( %ld, %#lx )", ARG1, ARG2);
++   PRE_REG_READ2(int, "sched_rr_get_interval",
++                 vki_pid_t, pid,
++                 struct vki_timespec *, tp);
++   PRE_MEM_WRITE("sched_rr_get_interval(timespec)",
++                 ARG2, sizeof(struct vki_timespec));
++}
++
++POST(sys_sched_rr_get_interval)
++{
++   POST_MEM_WRITE(ARG2, sizeof(struct vki_timespec));
++}
++
+ PRE(sys_sched_setaffinity)
+ {
+    PRINT("sched_setaffinity ( %ld, %ld, %#lx )", ARG1, ARG2, ARG3);
+@@ -2364,6 +2399,21 @@ POST(sys_pipe2)
+    }
+ }
+ 
++PRE(sys_dup3)
++{
++   PRINT("sys_dup3 ( %ld, %ld, %ld )", ARG1,ARG2,ARG3);
++   PRE_REG_READ3(long, "dup3", unsigned int, oldfd, unsigned int, newfd, int, flags);
++   if (!ML_(fd_allowed)(ARG2, "dup3", tid, True))
++      SET_STATUS_Failure( VKI_EBADF );
++}
++
++POST(sys_dup3)
++{
++   vg_assert(SUCCESS);
++   if (VG_(clo_track_fds))
++      ML_(record_fd_open_named)(tid, RES);
++}
++
+ PRE(sys_quotactl)
+ {
+    PRINT("sys_quotactl (0x%lx, %#lx, 0x%lx, 0x%lx )", ARG1,ARG2,ARG3, ARG4);
+@@ -2394,15 +2444,50 @@ POST(sys_waitid)
+ PRE(sys_sync_file_range)
+ {
+    *flags |= SfMayBlock;
+-   PRINT("sys_sync_file_range ( %ld, %ld, %ld, %ld )",
+-         ARG1,ARG2,ARG3,ARG4);
++#if VG_WORDSIZE == 4
++   PRINT("sys_sync_file_range ( %ld, %lld, %lld, %ld )",
++         ARG1,MERGE64(ARG2,ARG3),MERGE64(ARG4,ARG5),ARG6);
++   PRE_REG_READ6(long, "sync_file_range",
++                 int, fd,
++                 unsigned, MERGE64_FIRST(offset), unsigned, MERGE64_SECOND(offset),
++                 unsigned, MERGE64_FIRST(nbytes), unsigned, MERGE64_SECOND(nbytes),
++                 unsigned int, flags);
++#elif VG_WORDSIZE == 8
++   PRINT("sys_sync_file_range ( %ld, %lld, %lld, %ld )",
++         ARG1,(Long)ARG2,(Long)ARG3,ARG4);
+    PRE_REG_READ4(long, "sync_file_range",
+                  int, fd, vki_loff_t, offset, vki_loff_t, nbytes,
+                  unsigned int, flags);
++#else
++#  error Unexpected word size
++#endif
+    if (!ML_(fd_allowed)(ARG1, "sync_file_range", tid, False))
+       SET_STATUS_Failure( VKI_EBADF );
+ }
+ 
++PRE(sys_sync_file_range2)
++{
++   *flags |= SfMayBlock;
++#if VG_WORDSIZE == 4
++   PRINT("sys_sync_file_range2 ( %ld, %ld, %lld, %lld )",
++         ARG1,ARG2,MERGE64(ARG3,ARG4),MERGE64(ARG5,ARG6));
++   PRE_REG_READ6(long, "sync_file_range2",
++                 int, fd, unsigned int, flags,
++                 unsigned, MERGE64_FIRST(offset), unsigned, MERGE64_SECOND(offset),
++                 unsigned, MERGE64_FIRST(nbytes), unsigned, MERGE64_SECOND(nbytes));
++#elif VG_WORDSIZE == 8
++   PRINT("sys_sync_file_range2 ( %ld, %ld, %lld, %lld )",
++         ARG1,ARG2,(Long)ARG3,(Long)ARG4);
++   PRE_REG_READ4(long, "sync_file_range2",
++                 int, fd, unsigned int, flags,
++                 vki_loff_t, offset, vki_loff_t, nbytes);
++#else
++#  error Unexpected word size
++#endif
++   if (!ML_(fd_allowed)(ARG1, "sync_file_range2", tid, False))
++      SET_STATUS_Failure( VKI_EBADF );
++}
++
+ PRE(sys_stime)
+ {
+    PRINT("sys_stime ( %#lx )", ARG1);
+@@ -2684,6 +2769,21 @@ POST(sys_rt_sigqueueinfo)
+       SET_STATUS_Failure( VKI_EINVAL );
+ }
+ 
++PRE(sys_rt_tgsigqueueinfo)
++{
++   PRINT("sys_rt_tgsigqueueinfo(%ld, %ld, %ld, %#lx)", ARG1, ARG2, ARG3, ARG4);
++   PRE_REG_READ4(long, "rt_tgsigqueueinfo",
++                 int, tgid, int, pid, int, sig, vki_siginfo_t *, uinfo);
++   if (ARG3 != 0)
++      PRE_MEM_READ( "rt_tgsigqueueinfo(uinfo)", ARG4, VKI_SI_MAX_SIZE );
++}
++
++POST(sys_rt_tgsigqueueinfo)
++{
++   if (!ML_(client_signal_OK)(ARG3))
++      SET_STATUS_Failure( VKI_EINVAL );
++}
++
+ // XXX: x86-specific?  The kernel prototypes for the different archs are
+ //      hard to decipher.
+ PRE(sys_rt_sigsuspend)
+@@ -3299,9 +3399,9 @@ PRE(sys_delete_module)
+ PRE(sys_lookup_dcookie)
+ {
+    PRINT("sys_lookup_dcookie (0x%llx, %#lx, %ld)",
+-         LOHI64(ARG1,ARG2), ARG3, ARG4);
++         MERGE64(ARG1,ARG2), ARG3, ARG4);
+    PRE_REG_READ4(long, "lookup_dcookie",
+-                 vki_u32, cookie_low32, vki_u32, cookie_high32,
++                 vki_u32, MERGE64_FIRST(cookie), vki_u32, MERGE64_SECOND(cookie),
+                  char *, buf, vki_size_t, len);
+    PRE_MEM_WRITE( "lookup_dcookie(buf)", ARG3, ARG4);
+ }
+--- valgrind-3.5.0/coregrind/m_syswrap/priv_syswrap-linux.h.jj	2009-12-02 05:38:21.321704000 -0500
++++ valgrind-3.5.0/coregrind/m_syswrap/priv_syswrap-linux.h	2009-12-02 05:39:08.583466000 -0500
+@@ -165,6 +165,7 @@ DECL_TEMPLATE(linux, sys_utimensat);
+ 
+ DECL_TEMPLATE(linux, sys_preadv);
+ DECL_TEMPLATE(linux, sys_pwritev);
++DECL_TEMPLATE(linux, sys_dup3);
+ 
+ DECL_TEMPLATE(linux, sys_add_key);
+ DECL_TEMPLATE(linux, sys_request_key);
+@@ -214,7 +215,7 @@ DECL_TEMPLATE(linux, sys_sched_getschedu
+ DECL_TEMPLATE(linux, sys_sched_yield);
+ DECL_TEMPLATE(linux, sys_sched_get_priority_max);
+ DECL_TEMPLATE(linux, sys_sched_get_priority_min);
+-//DECL_TEMPLATE(linux, sys_sched_rr_get_interval);    // not yet encountered
++DECL_TEMPLATE(linux, sys_sched_rr_get_interval);
+ DECL_TEMPLATE(linux, sys_sched_setaffinity);
+ DECL_TEMPLATE(linux, sys_sched_getaffinity);
+ 
+@@ -242,10 +243,12 @@ DECL_TEMPLATE(linux, sys_rt_sigprocmask)
+ DECL_TEMPLATE(linux, sys_rt_sigpending);
+ DECL_TEMPLATE(linux, sys_rt_sigtimedwait);
+ DECL_TEMPLATE(linux, sys_rt_sigqueueinfo);
++DECL_TEMPLATE(linux, sys_rt_tgsigqueueinfo);
+ DECL_TEMPLATE(linux, sys_rt_sigsuspend);
+ 
+ // Linux-specific?
+ DECL_TEMPLATE(linux, sys_sync_file_range);
++DECL_TEMPLATE(linux, sys_sync_file_range2);
+ DECL_TEMPLATE(linux, sys_stime);  /* maybe generic?  I'm not sure */
+ 
+ // Linux specific (kernel modules)
+--- valgrind-3.5.0/coregrind/m_syswrap/syswrap-amd64-linux.c.jj	2009-12-02 05:38:21.283699000 -0500
++++ valgrind-3.5.0/coregrind/m_syswrap/syswrap-amd64-linux.c	2009-12-02 05:39:08.602453000 -0500
+@@ -349,6 +349,7 @@ DECL_TEMPLATE(amd64_linux, sys_setsockop
+ DECL_TEMPLATE(amd64_linux, sys_getsockopt);
+ DECL_TEMPLATE(amd64_linux, sys_connect);
+ DECL_TEMPLATE(amd64_linux, sys_accept);
++DECL_TEMPLATE(amd64_linux, sys_accept4);
+ DECL_TEMPLATE(amd64_linux, sys_sendto);
+ DECL_TEMPLATE(amd64_linux, sys_recvfrom);
+ DECL_TEMPLATE(amd64_linux, sys_sendmsg);
+@@ -684,6 +685,23 @@ POST(sys_accept)
+    SET_STATUS_from_SysRes(r);
+ }
+ 
++PRE(sys_accept4)
++{
++   *flags |= SfMayBlock;
++   PRINT("sys_accept4 ( %ld, %#lx, %ld, %ld )",ARG1,ARG2,ARG3,ARG4);
++   PRE_REG_READ4(long, "accept4",
++                 int, s, struct sockaddr *, addr, int, *addrlen, int, flags);
++   ML_(generic_PRE_sys_accept)(tid, ARG1,ARG2,ARG3);
++}
++POST(sys_accept4)
++{
++   SysRes r;
++   vg_assert(SUCCESS);
++   r = ML_(generic_POST_sys_accept)(tid, VG_(mk_SysRes_Success)(RES),
++                                         ARG1,ARG2,ARG3);
++   SET_STATUS_from_SysRes(r);
++}
++
+ PRE(sys_sendto)
+ {
+    *flags |= SfMayBlock;
+@@ -1200,20 +1218,20 @@ const SyscallTableEntry ML_(syscall_tabl
+    LINX_(__NR_sched_getscheduler,      sys_sched_getscheduler),      // 145 
+    LINX_(__NR_sched_get_priority_max,  sys_sched_get_priority_max),  // 146 
+    LINX_(__NR_sched_get_priority_min,  sys_sched_get_priority_min),  // 147 
+-   //LINX?(__NR_sched_rr_get_interval,   sys_sched_rr_get_interval),   // 148 
++   LINXY(__NR_sched_rr_get_interval,   sys_sched_rr_get_interval),   // 148 
+    GENX_(__NR_mlock,                   sys_mlock),                   // 149 
+ 
+    GENX_(__NR_munlock,           sys_munlock),        // 150 
+    GENX_(__NR_mlockall,          sys_mlockall),       // 151 
+    LINX_(__NR_munlockall,        sys_munlockall),     // 152 
+-   //   (__NR_vhangup,           sys_vhangup),        // 153 
++   LINX_(__NR_vhangup,           sys_vhangup),        // 153 
+    //   (__NR_modify_ldt,        sys_modify_ldt),     // 154 
+ 
+    //   (__NR_pivot_root,        sys_pivot_root),     // 155 
+    LINXY(__NR__sysctl,           sys_sysctl),         // 156 
+    LINXY(__NR_prctl,             sys_prctl),          // 157 
+    PLAX_(__NR_arch_prctl,	 sys_arch_prctl),     // 158 
+-   //   (__NR_adjtimex,          sys_adjtimex),       // 159 
++   LINXY(__NR_adjtimex,          sys_adjtimex),       // 159 
+ 
+    GENX_(__NR_setrlimit,         sys_setrlimit),      // 160 
+    GENX_(__NR_chroot,            sys_chroot),         // 161 
+@@ -1368,18 +1386,18 @@ const SyscallTableEntry ML_(syscall_tabl
+    LINX_(__NR_fallocate,         sys_fallocate),        // 285
+    LINXY(__NR_timerfd_settime,   sys_timerfd_settime),  // 286
+    LINXY(__NR_timerfd_gettime,   sys_timerfd_gettime),  // 287
+-   //   (__NR_paccept,           sys_ni_syscall)        // 288
++   PLAXY(__NR_accept4,           sys_accept4),          // 288
+    LINXY(__NR_signalfd4,         sys_signalfd4),        // 289
+ 
+    LINX_(__NR_eventfd2,          sys_eventfd2),         // 290
+    LINXY(__NR_epoll_create1,     sys_epoll_create1),    // 291
+-   //   (__NR_dup3,              sys_ni_syscall)        // 292
++   LINXY(__NR_dup3,              sys_dup3),             // 292
+    LINXY(__NR_pipe2,             sys_pipe2),            // 293
+    LINXY(__NR_inotify_init1,     sys_inotify_init1),    // 294
+ 
+    LINXY(__NR_preadv,            sys_preadv),           // 295
+    LINX_(__NR_pwritev,           sys_pwritev),          // 296
+-   //   (__NR_rt_tgsigqueueinfo, sys_ni_syscall)        // 297
++   LINXY(__NR_rt_tgsigqueueinfo, sys_rt_tgsigqueueinfo),// 297
+    LINXY(__NR_perf_counter_open, sys_perf_counter_open) // 298
+ };
+ 
+--- valgrind-3.5.0/coregrind/m_syswrap/syswrap-generic.c.jj	2009-08-19 09:37:42.000000000 -0400
++++ valgrind-3.5.0/coregrind/m_syswrap/syswrap-generic.c	2009-12-02 05:39:08.627429000 -0500
+@@ -2091,11 +2091,17 @@ ML_(generic_PRE_sys_mmap) ( ThreadId tid
+ #define PRE(name)      DEFN_PRE_TEMPLATE(generic, name)
+ #define POST(name)     DEFN_POST_TEMPLATE(generic, name)
+ 
+-#if VG_WORDSIZE == 4
+-// Combine two 32-bit values into a 64-bit value
+-// Always use with low-numbered arg first (e.g. LOHI64(ARG1,ARG2) )
+-// GrP fixme correct for ppc-linux?
+-#define LOHI64(lo,hi)   ( ((ULong)(lo)) | (((ULong)(hi)) << 32) )
++// Macros to support 64-bit syscall args split into two 32 bit values
++#if defined(VG_LITTLEENDIAN)
++#define MERGE64(lo,hi)   ( ((ULong)(lo)) | (((ULong)(hi)) << 32) )
++#define MERGE64_FIRST(name) name##_low
++#define MERGE64_SECOND(name) name##_high
++#elif defined(VG_BIGENDIAN)
++#define MERGE64(hi,lo)   ( ((ULong)(lo)) | (((ULong)(hi)) << 32) )
++#define MERGE64_FIRST(name) name##_high
++#define MERGE64_SECOND(name) name##_low
++#else
++#error Unknown endianness
+ #endif
+ 
+ PRE(sys_exit)
+@@ -2346,10 +2352,10 @@ PRE(sys_pwrite64)
+    *flags |= SfMayBlock;
+ #if VG_WORDSIZE == 4
+    PRINT("sys_pwrite64 ( %ld, %#lx, %llu, %lld )",
+-         ARG1, ARG2, (ULong)ARG3, LOHI64(ARG4,ARG5));
++         ARG1, ARG2, (ULong)ARG3, MERGE64(ARG4,ARG5));
+    PRE_REG_READ5(ssize_t, "pwrite64",
+                  unsigned int, fd, const char *, buf, vki_size_t, count,
+-                 vki_u32, offset_low32, vki_u32, offset_high32);
++                 vki_u32, MERGE64_FIRST(offset), vki_u32, MERGE64_SECOND(offset));
+ #elif VG_WORDSIZE == 8
+    PRINT("sys_pwrite64 ( %ld, %#lx, %llu, %lld )",
+          ARG1, ARG2, (ULong)ARG3, (Long)ARG4);
+@@ -2405,10 +2411,10 @@ PRE(sys_pread64)
+    *flags |= SfMayBlock;
+ #if VG_WORDSIZE == 4
+    PRINT("sys_pread64 ( %ld, %#lx, %llu, %lld )",
+-         ARG1, ARG2, (ULong)ARG3, LOHI64(ARG4,ARG5));
++         ARG1, ARG2, (ULong)ARG3, MERGE64(ARG4,ARG5));
+    PRE_REG_READ5(ssize_t, "pread64",
+                  unsigned int, fd, char *, buf, vki_size_t, count,
+-                 vki_u32, offset_low32, vki_u32, offset_high32);
++                 vki_u32, MERGE64_FIRST(offset), vki_u32, MERGE64_SECOND(offset));
+ #elif VG_WORDSIZE == 8
+    PRINT("sys_pread64 ( %ld, %#lx, %llu, %lld )",
+          ARG1, ARG2, (ULong)ARG3, (Long)ARG4);
+@@ -2966,10 +2972,10 @@ PRE(sys_ftruncate64)
+ {
+    *flags |= SfMayBlock;
+ #if VG_WORDSIZE == 4
+-   PRINT("sys_ftruncate64 ( %ld, %lld )", ARG1, LOHI64(ARG2,ARG3));
++   PRINT("sys_ftruncate64 ( %ld, %lld )", ARG1, MERGE64(ARG2,ARG3));
+    PRE_REG_READ3(long, "ftruncate64",
+                  unsigned int, fd,
+-                 UWord, length_low32, UWord, length_high32);
++                 UWord, MERGE64_FIRST(length), UWord, MERGE64_SECOND(length));
+ #else
+    PRINT("sys_ftruncate64 ( %ld, %lld )", ARG1, (Long)ARG2);
+    PRE_REG_READ2(long, "ftruncate64",
+@@ -2981,10 +2987,10 @@ PRE(sys_truncate64)
+ {
+    *flags |= SfMayBlock;
+ #if VG_WORDSIZE == 4
+-   PRINT("sys_truncate64 ( %#lx, %lld )", ARG1, (Long)LOHI64(ARG2, ARG3));
++   PRINT("sys_truncate64 ( %#lx, %lld )", ARG1, (Long)MERGE64(ARG2, ARG3));
+    PRE_REG_READ3(long, "truncate64",
+                  const char *, path,
+-                 UWord, length_low32, UWord, length_high32);
++                 UWord, MERGE64_FIRST(length), UWord, MERGE64_SECOND(length));
+ #else
+    PRINT("sys_truncate64 ( %#lx, %lld )", ARG1, (Long)ARG2);
+    PRE_REG_READ2(long, "truncate64",
+--- valgrind-3.5.0/coregrind/m_syswrap/syswrap-x86-linux.c.jj	2009-12-02 05:38:21.292713000 -0500
++++ valgrind-3.5.0/coregrind/m_syswrap/syswrap-x86-linux.c	2009-12-02 05:39:08.655406000 -0500
+@@ -1475,6 +1475,13 @@ PRE(sys_socketcall)
+       break;
+    }
+ 
++   case VKI_SYS_ACCEPT4: {
++      /*int accept(int s, struct sockaddr *add, int *addrlen, int flags)*/
++      PRE_MEM_READ( "socketcall.accept4(args)", ARG2, 4*sizeof(Addr) );
++      ML_(generic_PRE_sys_accept)( tid, ARG2_0, ARG2_1, ARG2_2 );
++      break;
++   }
++
+    case VKI_SYS_SENDTO:
+       /* int sendto(int s, const void *msg, int len, 
+                     unsigned int flags, 
+@@ -1620,7 +1627,9 @@ POST(sys_socketcall)
+       break;
+ 
+    case VKI_SYS_ACCEPT:
++   case VKI_SYS_ACCEPT4:
+       /* int accept(int s, struct sockaddr *addr, int *addrlen); */
++      /* int accept4(int s, struct sockaddr *addr, int *addrlen, int flags); */
+      r = ML_(generic_POST_sys_accept)( tid, VG_(mk_SysRes_Success)(RES), 
+                                             ARG2_0, ARG2_1, ARG2_2 );
+      SET_STATUS_from_SysRes(r);
+@@ -2001,8 +2010,8 @@ const SyscallTableEntry ML_(syscall_tabl
+ //zz    //   (__NR_setdomainname,     sys_setdomainname),  // 121 */*(?)
+    GENXY(__NR_uname,             sys_newuname),       // 122
+    PLAX_(__NR_modify_ldt,        sys_modify_ldt),     // 123
+-//zz    LINXY(__NR_adjtimex,          sys_adjtimex),       // 124
+-//zz 
++   LINXY(__NR_adjtimex,          sys_adjtimex),       // 124
++
+    GENXY(__NR_mprotect,          sys_mprotect),       // 125
+    LINXY(__NR_sigprocmask,       sys_sigprocmask),    // 126
+ //zz    // Nb: create_module() was removed 2.4-->2.6
+@@ -2048,7 +2057,7 @@ const SyscallTableEntry ML_(syscall_tabl
+    LINX_(__NR_sched_get_priority_max, sys_sched_get_priority_max),// 159
+ 
+    LINX_(__NR_sched_get_priority_min, sys_sched_get_priority_min),// 160
+-//zz    //LINX?(__NR_sched_rr_get_interval,  sys_sched_rr_get_interval), // 161 */*
++   LINXY(__NR_sched_rr_get_interval,  sys_sched_rr_get_interval), // 161
+    GENXY(__NR_nanosleep,         sys_nanosleep),      // 162
+    GENX_(__NR_mremap,            sys_mremap),         // 163
+    LINX_(__NR_setresuid,         sys_setresuid16),    // 164
+@@ -2244,7 +2253,7 @@ const SyscallTableEntry ML_(syscall_tabl
+    LINXY(__NR_signalfd,          sys_signalfd),         // 321
+    LINXY(__NR_timerfd_create,    sys_timerfd_create),   // 322
+    LINX_(__NR_eventfd,           sys_eventfd),          // 323
+-   //LINX_(__NR_fallocate,         sys_fallocate),        // 324
++   LINX_(__NR_fallocate,         sys_fallocate),        // 324
+ 
+    LINXY(__NR_timerfd_settime,   sys_timerfd_settime),  // 325
+    LINXY(__NR_timerfd_gettime,   sys_timerfd_gettime),  // 326
+@@ -2252,13 +2261,13 @@ const SyscallTableEntry ML_(syscall_tabl
+    LINX_(__NR_eventfd2,          sys_eventfd2),         // 328
+    LINXY(__NR_epoll_create1,     sys_epoll_create1),     // 329
+ 
+-   //   (__NR_dup3,              sys_ni_syscall)        // 330
++   LINXY(__NR_dup3,              sys_dup3),             // 330
+    LINXY(__NR_pipe2,             sys_pipe2),            // 331
+    LINXY(__NR_inotify_init1,     sys_inotify_init1),    // 332
+    LINXY(__NR_preadv,            sys_preadv),           // 333
+    LINX_(__NR_pwritev,           sys_pwritev),          // 334
+ 
+-   //   (__NR_rt_tgsigqueueinfo, sys_ni_syscall)        // 335
++   LINXY(__NR_rt_tgsigqueueinfo, sys_rt_tgsigqueueinfo),// 335
+    LINXY(__NR_perf_counter_open, sys_perf_counter_open) // 336
+ };
+ 
+--- valgrind-3.5.0/coregrind/m_syswrap/syswrap-ppc32-linux.c.jj	2009-12-02 05:38:21.331695000 -0500
++++ valgrind-3.5.0/coregrind/m_syswrap/syswrap-ppc32-linux.c	2009-12-02 05:43:30.802905000 -0500
+@@ -457,6 +457,13 @@ PRE(sys_socketcall)
+       break;
+    }
+ 
++   case VKI_SYS_ACCEPT4: {
++     /* int accept(int s, struct sockaddr *addr, int *addrlen, int args); */
++      PRE_MEM_READ( "socketcall.accept4(args)", ARG2, 4*sizeof(Addr) );
++      ML_(generic_PRE_sys_accept)( tid, ARG2_0, ARG2_1, ARG2_2 );
++      break;
++   }
++
+    case VKI_SYS_SENDTO:
+      /* int sendto(int s, const void *msg, int len,
+                     unsigned int flags,
+@@ -602,6 +609,7 @@ POST(sys_socketcall)
+     break;
+ 
+   case VKI_SYS_ACCEPT:
++  case VKI_SYS_ACCEPT4:
+     /* int accept(int s, struct sockaddr *addr, int *addrlen); */
+     r = ML_(generic_POST_sys_accept)( tid, VG_(mk_SysRes_Success)(RES),
+ 				      ARG2_0, ARG2_1, ARG2_2 );
+@@ -1629,7 +1637,7 @@ const SyscallTableEntry ML_(syscall_tabl
+ //..    //   (__NR_olduname,          sys_uname),             // 109 -- obsolete
+ //.. 
+ //..    GENX_(__NR_iopl,              sys_iopl),              // 110
+-//..    LINX_(__NR_vhangup,           sys_vhangup),           // 111
++   LINX_(__NR_vhangup,           sys_vhangup),           // 111
+ //..    GENX_(__NR_idle,              sys_ni_syscall),        // 112
+ //..    //   (__NR_vm86old,           sys_vm86old),           // 113 x86/Linux-only
+    GENXY(__NR_wait4,             sys_wait4),             // 114
+@@ -1644,8 +1652,8 @@ const SyscallTableEntry ML_(syscall_tabl
+ //..    //   (__NR_setdomainname,     sys_setdomainname),     // 121 */*(?)
+    GENXY(__NR_uname,             sys_newuname),          // 122
+ //..    PLAX_(__NR_modify_ldt,        sys_modify_ldt),        // 123
+-//..    LINXY(__NR_adjtimex,          sys_adjtimex),          // 124
+-//.. 
++   LINXY(__NR_adjtimex,          sys_adjtimex),          // 124
++
+    GENXY(__NR_mprotect,          sys_mprotect),          // 125
+    LINXY(__NR_sigprocmask,       sys_sigprocmask),       // 126
+    GENX_(__NR_create_module,     sys_ni_syscall),        // 127
+@@ -1690,7 +1698,7 @@ const SyscallTableEntry ML_(syscall_tabl
+    LINX_(__NR_sched_get_priority_max, sys_sched_get_priority_max),// 159
+ 
+    LINX_(__NR_sched_get_priority_min, sys_sched_get_priority_min),// 160
+-//..    //LINX?(__NR_sched_rr_get_interval,  sys_sched_rr_get_interval), // 161 */*
++   LINXY(__NR_sched_rr_get_interval,  sys_sched_rr_get_interval), // 161
+    GENXY(__NR_nanosleep,         sys_nanosleep),         // 162
+    GENX_(__NR_mremap,            sys_mremap),            // 163
+    LINX_(__NR_setresuid,         sys_setresuid),         // 164
+@@ -1857,21 +1865,21 @@ const SyscallTableEntry ML_(syscall_tabl
+    LINXY(__NR_signalfd,          sys_signalfd),          // 305
+    LINXY(__NR_timerfd_create,    sys_timerfd_create),    // 306
+    LINX_(__NR_eventfd,           sys_eventfd),           // 307
+-//   LINX_(__NR_sync_file_range2,   sys_ni_syscall),       // 308
+-//   LINX_(__NR_fallocate,         sys_fallocate),         // 309
++   LINX_(__NR_sync_file_range2,  sys_sync_file_range2),  // 308
++   LINX_(__NR_fallocate,         sys_fallocate),         // 309
+ //   LINXY(__NR_subpage_prot,       sys_ni_syscall),       // 310
+    LINXY(__NR_timerfd_settime,   sys_timerfd_settime),  // 311
+    LINXY(__NR_timerfd_gettime,   sys_timerfd_gettime),  // 312
+    LINXY(__NR_signalfd4,         sys_signalfd4),        // 313
+    LINX_(__NR_eventfd2,          sys_eventfd2),         // 314
+    LINXY(__NR_epoll_create1,     sys_epoll_create1),    // 315
+-   //   (__NR_dup3,              sys_ni_syscall)        // 316
++   LINXY(__NR_dup3,              sys_dup3),             // 316
+    LINXY(__NR_pipe2,             sys_pipe2),            // 317
+    LINXY(__NR_inotify_init1,     sys_inotify_init1),    // 318
+    LINXY(__NR_perf_counter_open, sys_perf_counter_open),// 319
+    LINXY(__NR_preadv,            sys_preadv),           // 320
+-   LINX_(__NR_pwritev,           sys_pwritev)           // 321
+-   //   (__NR_rt_tgsigqueueinfo, sys_ni_syscall)        // 322
++   LINX_(__NR_pwritev,           sys_pwritev),          // 321
++   LINXY(__NR_rt_tgsigqueueinfo, sys_rt_tgsigqueueinfo) // 322
+ };
+ 
+ const UInt ML_(syscall_table_size) = 

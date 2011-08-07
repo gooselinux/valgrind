@@ -1,0 +1,10 @@
+--- valgrind/valgrind.pc.in.jj	2009-10-09 12:52:05.000000000 +0200
++++ valgrind/valgrind.pc.in	2010-01-20 10:17:40.000000000 +0100
+@@ -11,6 +11,6 @@ Name: Valgrind
+ Description: A dynamic binary instrumentation framework
+ Version: @VERSION@
+ Requires:
+-Libs: -L${libdir}/valgrind/@VGCONF_ARCH_PRI@-@VGCONF_OS@ -lcoregrind -lvex -lgcc
++Libs: -L${libdir}/valgrind -lcoregrind-@VGCONF_ARCH_PRI@-@VGCONF_OS@ -lvex-@VGCONF_ARCH_PRI@-@VGCONF_OS@ -lgcc
+ Cflags: -I${includedir}
+ 

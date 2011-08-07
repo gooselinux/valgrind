@@ -1,0 +1,22 @@
+--- valgrind-3.5.0/include/pub_tool_basics.h.jj	2009-08-19 09:37:08.000000000 -0400
++++ valgrind-3.5.0/include/pub_tool_basics.h	2010-04-09 06:10:59.047422000 -0400
+@@ -49,10 +49,6 @@
+ // For varargs types
+ #include <stdarg.h>
+ 
+-/* For HAVE_BUILTIN_EXPECT */
+-#include "config.h"
+-
+-
+ /* ---------------------------------------------------------------------
+    symbol prefixing
+    ------------------------------------------------------------------ */
+@@ -315,7 +311,7 @@ static inline Bool sr_EQ ( SysRes sr1, S
+ #define VG_BUGS_TO "www.valgrind.org"
+ 
+ /* Branch prediction hints. */
+-#if HAVE_BUILTIN_EXPECT
++#if defined(__GNUC__) && (__GNUC__ >= 3)
+ #  define LIKELY(x)   __builtin_expect(!!(x), 1)
+ #  define UNLIKELY(x) __builtin_expect((x), 0)
+ #else

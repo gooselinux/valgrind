@@ -1,0 +1,15 @@
+Temporarily revert a Darwin specific change that broke mmap PROT_NONE followed by
+mprotect PROT_READ|PROT_WRITE.
+http://bugs.kde.org/show_bug.cgi?id=210268
+
+--- valgrind-3.5.0/memcheck/mc_main.c.jj	2009-10-09 12:51:59.000000000 +0200
++++ valgrind-3.5.0/memcheck/mc_main.c	2009-10-12 17:13:26.000000000 +0200
+@@ -3705,7 +3705,7 @@ static
+ void mc_new_mem_mmap ( Addr a, SizeT len, Bool rr, Bool ww, Bool xx,
+                        ULong di_handle )
+ {
+-   if (rr || ww || xx)
++   if (1 || rr || ww || xx)
+       MC_(make_mem_defined)(a, len);
+    else
+       MC_(make_mem_noaccess)(a, len);

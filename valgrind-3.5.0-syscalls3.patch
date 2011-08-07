@@ -1,0 +1,142 @@
+--- valgrind/coregrind/m_syswrap/syswrap-linux.c	(revision 10964)
++++ valgrind/coregrind/m_syswrap/syswrap-linux.c	(revision 11100)
+@@ -2567,6 +2588,29 @@ POST(sys_perf_counter_open)
+    }
+ }
+ 
++PRE(sys_getcpu)
++{
++   PRINT("sys_getcpu ( %#lx, %#lx, %#lx )" , ARG1,ARG2,ARG3);
++   PRE_REG_READ3(int, "getcpu", 
++                 unsigned *, cpu, unsigned *, node, struct vki_getcpu_cache *, tcache);
++   if (ARG1 != 0)
++      PRE_MEM_WRITE( "getcpu(cpu)", ARG1, sizeof(unsigned) );
++   if (ARG2 != 0)
++      PRE_MEM_WRITE( "getcpu(node)", ARG2, sizeof(unsigned) );
++   if (ARG3 != 0)
++      PRE_MEM_WRITE( "getcpu(tcache)", ARG3, sizeof(struct vki_getcpu_cache) );
++}
++
++POST(sys_getcpu)
++{
++   if (ARG1 != 0)
++      POST_MEM_WRITE( ARG1, sizeof(unsigned) );
++   if (ARG2 != 0)
++      POST_MEM_WRITE( ARG2, sizeof(unsigned) );
++   if (ARG3 != 0)
++      POST_MEM_WRITE( ARG3, sizeof(struct vki_getcpu_cache) );
++}
++
+ /* ---------------------------------------------------------------------
+    utime wrapper
+    ------------------------------------------------------------------ */
+@@ -3453,6 +3497,30 @@ PRE(sys_delete_module)
+ }
+ 
+ /* ---------------------------------------------------------------------
++   splice wrappers
++   ------------------------------------------------------------------ */
++
++PRE(sys_splice)
++{
++   *flags |= SfMayBlock;
++   PRINT("sys_splice ( %ld, %#lx, %ld, %#lx, %ld, %ld )",
++         ARG1,ARG2,ARG3,ARG4,ARG5,ARG6);
++   PRE_REG_READ6(int32_t, "splice",
++                 int, fd_in, vki_loff_t *, off_in,
++                 int, fd_out, vki_loff_t *, off_out,
++                 vki_size_t, len, unsigned int, flags);
++   if (!ML_(fd_allowed)(ARG1, "splice(fd_in)", tid, False) ||
++       !ML_(fd_allowed)(ARG3, "splice(fd_out)", tid, False)) {
++      SET_STATUS_Failure( VKI_EBADF );
++   } else {
++      if (ARG2 != 0)
++         PRE_MEM_READ( "splice(off_in)", ARG2, sizeof(vki_loff_t));
++      if (ARG4 != 0)
++         PRE_MEM_READ( "splice(off_out)", ARG4, sizeof(vki_loff_t));
++   }
++}
++
++/* ---------------------------------------------------------------------
+    oprofile-related wrappers
+    ------------------------------------------------------------------ */
+ 
+--- valgrind/coregrind/m_syswrap/priv_syswrap-linux.h	(revision 10964)
++++ valgrind/coregrind/m_syswrap/priv_syswrap-linux.h	(revision 11100)
+@@ -166,6 +166,8 @@ DECL_TEMPLATE(linux, sys_utimensat);
+ DECL_TEMPLATE(linux, sys_preadv);
+ DECL_TEMPLATE(linux, sys_pwritev);
+ DECL_TEMPLATE(linux, sys_dup3);
++DECL_TEMPLATE(linux, sys_getcpu);
++DECL_TEMPLATE(linux, sys_splice);
+ 
+ DECL_TEMPLATE(linux, sys_add_key);
+ DECL_TEMPLATE(linux, sys_request_key);
+--- valgrind/coregrind/m_syswrap/syswrap-amd64-linux.c	(revision 10964)
++++ valgrind/coregrind/m_syswrap/syswrap-amd64-linux.c	(revision 11100)
+@@ -1371,7 +1382,7 @@ const SyscallTableEntry ML_(syscall_tabl
+    LINX_(__NR_set_robust_list,	 sys_set_robust_list),  // 273
+    LINXY(__NR_get_robust_list,	 sys_get_robust_list),  // 274
+ 
+-//   LINX_(__NR_splice,            sys_ni_syscall),       // 275
++   LINX_(__NR_splice,            sys_splice),           // 275
+ //   LINX_(__NR_tee,               sys_ni_syscall),       // 276
+    LINX_(__NR_sync_file_range,   sys_sync_file_range),  // 277
+ //   LINX_(__NR_vmsplice,          sys_ni_syscall),       // 278
+--- valgrind/coregrind/m_syswrap/syswrap-x86-linux.c	(revision 10964)
++++ valgrind/coregrind/m_syswrap/syswrap-x86-linux.c	(revision 11100)
+@@ -2240,13 +2251,13 @@ const SyscallTableEntry ML_(syscall_tabl
+ //   LINX_(__NR_unshare,		 sys_unshare),          // 310
+    LINX_(__NR_set_robust_list,	 sys_set_robust_list),  // 311
+    LINXY(__NR_get_robust_list,	 sys_get_robust_list),  // 312
+-//   LINX_(__NR_splice,            sys_ni_syscall),       // 313
++   LINX_(__NR_splice,            sys_splice),           // 313
+    LINX_(__NR_sync_file_range,   sys_sync_file_range),  // 314
+ 
+ //   LINX_(__NR_tee,               sys_ni_syscall),       // 315
+ //   LINX_(__NR_vmsplice,          sys_ni_syscall),       // 316
+ //   LINX_(__NR_move_pages,        sys_ni_syscall),       // 317
+-//   LINX_(__NR_getcpu,            sys_ni_syscall),       // 318
++   LINXY(__NR_getcpu,            sys_getcpu),           // 318
+    LINXY(__NR_epoll_pwait,       sys_epoll_pwait),      // 319
+ 
+    LINX_(__NR_utimensat,         sys_utimensat),        // 320
+--- valgrind/coregrind/m_syswrap/syswrap-ppc32-linux.c	(revision 10964)
++++ valgrind/coregrind/m_syswrap/syswrap-ppc32-linux.c	(revision 11100)
+@@ -1859,7 +1870,7 @@ const SyscallTableEntry ML_(syscall_tabl
+    LINX_(__NR_set_robust_list,   sys_set_robust_list),   // 299
+    LINXY(__NR_get_robust_list,   sys_get_robust_list),   // 300
+ //   LINX_(__NR_move_pages,        sys_ni_syscall),        // 301
+-//   LINX_(__NR_getcpu,            sys_ni_syscall),        // 302
++   LINXY(__NR_getcpu,            sys_getcpu),            // 302
+    LINXY(__NR_epoll_pwait,       sys_epoll_pwait),       // 303
+    LINX_(__NR_utimensat,         sys_utimensat),         // 304
+    LINXY(__NR_signalfd,          sys_signalfd),          // 305
+--- valgrind/coregrind/m_syswrap/syswrap-ppc64-linux.c	(revision 10964)
++++ valgrind/coregrind/m_syswrap/syswrap-ppc64-linux.c	(revision 11100)
+@@ -1500,7 +1511,7 @@ const SyscallTableEntry ML_(syscall_tabl
+    LINX_(__NR_set_robust_list,   sys_set_robust_list),    // 299
+    LINXY(__NR_get_robust_list,   sys_get_robust_list),    // 300
+ //   LINX_(__NR_move_pages,        sys_ni_syscall),        // 301
+-//   LINX_(__NR_getcpu,            sys_ni_syscall),        // 302
++   LINXY(__NR_getcpu,            sys_getcpu),            // 302
+    LINXY(__NR_epoll_pwait,       sys_epoll_pwait),       // 303
+    LINX_(__NR_utimensat,         sys_utimensat),         // 304
+    LINXY(__NR_signalfd,          sys_signalfd),          // 305
+--- valgrind/include/vki/vki-linux.h	(revision 10964)
++++ valgrind/include/vki/vki-linux.h	(revision 11100)
+@@ -2627,6 +2635,14 @@ struct vki_perf_counter_attr {
+ 	__vki_u64			__reserved_3;
+ };
+ 
++/*--------------------------------------------------------------------*/
++// From linux-2.6.32.4/include/linux/getcpu.h
++/*--------------------------------------------------------------------*/
++
++struct vki_getcpu_cache {
++	unsigned long blob[128 / sizeof(long)];
++};
++
+ #endif // __VKI_LINUX_H
+ 
+ /*--------------------------------------------------------------------*/

@@ -1,0 +1,20 @@
+--- valgrind/coregrind/m_debuginfo/d3basics.c.jj	2010-01-20 09:46:56.000000000 +0100
++++ valgrind/coregrind/m_debuginfo/d3basics.c	2010-01-20 09:52:33.000000000 +0100
+@@ -770,12 +770,12 @@ GXResult ML_(evaluate_Dwarf3_Expr) ( UCh
+             PUSH(sw1);
+             break;
+          case DW_OP_mod:
+-            POP(sw2);
+-            if (sw2 == 0)
++            POP(uw2);
++            if (uw2 == 0)
+                FAIL("evaluate_Dwarf3_Expr: division by zero");
+-            POP(sw1);
+-            sw1 %= sw2;
+-            PUSH(sw1);
++            POP(uw1);
++            uw1 %= uw2;
++            PUSH(uw1);
+             break;
+ #define BINARY(name, op, s) \
+          case DW_OP_##name:		\

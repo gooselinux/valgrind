@@ -1,0 +1,832 @@
+--- valgrind/coregrind/m_debuginfo/readdwarf.c.jj	2009-08-19 15:37:44.000000000 +0200
++++ valgrind/coregrind/m_debuginfo/readdwarf.c	2009-10-21 13:18:25.000000000 +0200
+@@ -37,6 +37,7 @@
+ #include "pub_core_libcprint.h"
+ #include "pub_core_options.h"
+ #include "pub_core_xarray.h"
++#include "pub_core_tooliface.h"    /* VG_(needs) */
+ #include "priv_misc.h"             /* dinfo_zalloc/free/strdup */
+ #include "priv_d3basics.h"
+ #include "priv_tytypes.h"
+@@ -3446,23 +3447,37 @@ static CIE the_CIEs[N_CIEs];
+ 
+ 
+ void ML_(read_callframe_info_dwarf3)
+-        ( /*OUT*/struct _DebugInfo* di, UChar* ehframe_image )
++        ( /*OUT*/struct _DebugInfo* di, UChar* frame_image, SizeT frame_size,
++          Bool for_eh )
+ {
+    Int    nbytes;
+    HChar* how = NULL;
+    Int    n_CIEs = 0;
+-   UChar* data = ehframe_image;
++   UChar* data = frame_image;
++   UWord  ehframe_cfsis = 0;   
+ 
+ #  if defined(VGP_ppc32_linux) || defined(VGP_ppc64_linux)
+-   /* These targets don't use CFI-based stack unwinding. */
+-   return;
++   if (!VG_(needs).var_info /* the tool requires it */   
++       && !VG_(clo_read_var_info) /* the user asked for it */) {
++      /* These targets don't use CFI-based stack unwinding, but still might
++         need it for DW_OP_call_frame_cfa support. */
++      return;
++   }
+ #  endif
+ 
++   /* If we are reading .debug_frame after .eh_frame has been read, only
++      add FDEs which weren't covered in .eh_frame.  To be able to quickly
++      search the FDEs, the records must be sorted.  */
++   if ( ! for_eh && di->ehframe_size && di->cfsi_used ) {
++      ML_(canonicaliseCFI) ( di );
++      ehframe_cfsis = di->cfsi_used;
++   }
++
+    if (di->trace_cfi) {
+       VG_(printf)("\n-----------------------------------------------\n");
+       VG_(printf)("CFI info: szB %ld, _avma %#lx, _image %p\n",
+-                  di->ehframe_size, di->ehframe_avma,
+-                  ehframe_image );
++                  frame_size, for_eh ? di->ehframe_avma : 0,
++                  frame_image );
+       VG_(printf)("CFI info: name %s\n",
+                   di->filename );
+    }
+@@ -3495,11 +3510,11 @@ void ML_(read_callframe_info_dwarf3)
+       Bool   dw64;
+ 
+       /* Are we done? */
+-      if (data == ehframe_image + di->ehframe_size)
++      if (data == frame_image + frame_size)
+          return;
+ 
+       /* Overshot the end?  Means something is wrong */
+-      if (data > ehframe_image + di->ehframe_size) {
++      if (data > frame_image + frame_size) {
+          how = "overran the end of .eh_frame";
+          goto bad;
+       }
+@@ -3509,9 +3524,9 @@ void ML_(read_callframe_info_dwarf3)
+ 
+       ciefde_start = data;
+       if (di->trace_cfi) 
+-         VG_(printf)("\ncie/fde.start   = %p (ehframe_image + 0x%lx)\n", 
++         VG_(printf)("\ncie/fde.start   = %p (frame_image + 0x%lx)\n", 
+                      ciefde_start,
+-                     ciefde_start - ehframe_image + 0UL);
++                     ciefde_start - frame_image + 0UL);
+ 
+       ciefde_len = (ULong) read_UInt(data); data += sizeof(UInt);
+       if (di->trace_cfi) 
+@@ -3524,7 +3539,7 @@ void ML_(read_callframe_info_dwarf3)
+       if (ciefde_len == 0) {
+          if (di->ddump_frames)
+             VG_(printf)("%08lx ZERO terminator\n\n",
+-                        ((Addr)ciefde_start) - ((Addr)ehframe_image));
++                        ((Addr)ciefde_start) - ((Addr)frame_image));
+          return;
+       }
+ 
+@@ -3550,8 +3565,10 @@ void ML_(read_callframe_info_dwarf3)
+       if (di->trace_cfi) 
+          VG_(printf)("cie.pointer     = %lld\n", cie_pointer);
+ 
+-      /* If cie_pointer is zero, we've got a CIE; else it's an FDE. */
+-      if (cie_pointer == 0) {
++      /* If cie_pointer is zero for .eh_frame or all ones for .debug_frame,
++         we've got a CIE; else it's an FDE. */
++      if (cie_pointer == (for_eh ? 0ULL
++                          : dw64 ? 0xFFFFFFFFFFFFFFFFULL : 0xFFFFFFFFULL)) {
+ 
+          Int    this_CIE;
+          UChar  cie_version;
+@@ -3575,11 +3592,11 @@ void ML_(read_callframe_info_dwarf3)
+ 
+ 	 /* Record its offset.  This is how we will find it again
+             later when looking at an FDE. */
+-         the_CIEs[this_CIE].offset = (ULong)(ciefde_start - ehframe_image);
++         the_CIEs[this_CIE].offset = (ULong)(ciefde_start - frame_image);
+ 
+          if (di->ddump_frames)
+             VG_(printf)("%08lx %08lx %08lx CIE\n",
+-                        ((Addr)ciefde_start) - ((Addr)ehframe_image),
++                        ((Addr)ciefde_start) - ((Addr)frame_image),
+                         (Addr)ciefde_len,
+                         (Addr)(UWord)cie_pointer );
+ 
+@@ -3623,8 +3640,13 @@ void ML_(read_callframe_info_dwarf3)
+             VG_(printf)("  Data alignment factor: %d\n",
+                         (Int)the_CIEs[this_CIE].data_a_f);
+ 
+-         the_CIEs[this_CIE].ra_reg = (Int)read_UChar(data); 
+-         data += sizeof(UChar);
++         if (cie_version == 1) {
++            the_CIEs[this_CIE].ra_reg = (Int)read_UChar(data); 
++            data += sizeof(UChar);
++         } else {
++            the_CIEs[this_CIE].ra_reg = read_leb128( data, &nbytes, 0);
++            data += nbytes;
++         }
+          if (di->trace_cfi) 
+             VG_(printf)("cie.ra_reg      = %d\n", 
+                         the_CIEs[this_CIE].ra_reg);
+@@ -3702,7 +3724,7 @@ void ML_(read_callframe_info_dwarf3)
+ 	 }
+ 
+          if (the_CIEs[this_CIE].ilen < 0
+-             || the_CIEs[this_CIE].ilen > di->ehframe_size) {
++             || the_CIEs[this_CIE].ilen > frame_size) {
+             how = "implausible # cie initial insns";
+             goto bad;
+          }
+@@ -3717,8 +3739,8 @@ void ML_(read_callframe_info_dwarf3)
+          if (di->trace_cfi || di->ddump_frames) {
+             AddressDecodingInfo adi;
+             adi.encoding      = the_CIEs[this_CIE].address_encoding;
+-            adi.ehframe_image = ehframe_image;
+-            adi.ehframe_avma  = di->ehframe_avma;
++            adi.ehframe_image = frame_image;
++            adi.ehframe_avma  = for_eh ? di->ehframe_avma : 0;
+             adi.text_bias     = di->text_debug_bias;
+             show_CF_instructions( the_CIEs[this_CIE].instrs, 
+                                   the_CIEs[this_CIE].ilen, &adi,
+@@ -3747,9 +3769,12 @@ void ML_(read_callframe_info_dwarf3)
+             cie_pointer bytes back from here. */
+ 
+          /* re sizeof(UInt) / sizeof(ULong), matches XXX above. */
+-         look_for = (data - (dw64 ? sizeof(ULong) : sizeof(UInt)) 
+-                          - ehframe_image) 
+-                    - cie_pointer;
++         if (for_eh)
++            look_for = (data - (dw64 ? sizeof(ULong) : sizeof(UInt)) 
++                             - frame_image) 
++                       - cie_pointer;
++         else
++            look_for = cie_pointer;
+ 
+          for (cie = 0; cie < n_CIEs; cie++) {
+             if (0) VG_(printf)("look for %lld   %lld\n",
+@@ -3764,8 +3789,8 @@ void ML_(read_callframe_info_dwarf3)
+ 	 }
+ 
+          adi.encoding      = the_CIEs[cie].address_encoding;
+-         adi.ehframe_image = ehframe_image;
+-         adi.ehframe_avma  = di->ehframe_avma;
++         adi.ehframe_image = frame_image;
++         adi.ehframe_avma  = for_eh ? di->ehframe_avma : 0;
+          adi.text_bias     = di->text_debug_bias;
+          fde_initloc = read_encoded_Addr(&nbytes, &adi, data);
+          data += nbytes;
+@@ -3773,8 +3798,8 @@ void ML_(read_callframe_info_dwarf3)
+             VG_(printf)("fde.initloc     = %#lx\n", fde_initloc);
+ 
+          adi.encoding      = the_CIEs[cie].address_encoding & 0xf;
+-         adi.ehframe_image = ehframe_image;
+-         adi.ehframe_avma  = di->ehframe_avma;
++         adi.ehframe_image = frame_image;
++         adi.ehframe_avma  = for_eh ? di->ehframe_avma : 0;
+          adi.text_bias     = di->text_debug_bias;
+ 
+          /* WAS (incorrectly):
+@@ -3800,7 +3825,7 @@ void ML_(read_callframe_info_dwarf3)
+ 
+          if (di->ddump_frames)
+             VG_(printf)("%08lx %08lx %08lx FDE cie=%08lx pc=%08lx..%08lx\n",
+-                        ((Addr)ciefde_start) - ((Addr)ehframe_image),
++                        ((Addr)ciefde_start) - ((Addr)frame_image),
+                         (Addr)ciefde_len,
+                         (Addr)(UWord)cie_pointer,
+                         (Addr)look_for, 
+@@ -3827,16 +3852,43 @@ void ML_(read_callframe_info_dwarf3)
+             VG_(printf)("fde.ilen        = %d\n", (Int)fde_ilen);
+ 	 }
+ 
+-         if (fde_ilen < 0 || fde_ilen > di->ehframe_size) {
++         if (fde_ilen < 0 || fde_ilen > frame_size) {
+             how = "implausible # fde insns";
+             goto bad;
+          }
+ 
+ 	 data += fde_ilen;
+ 
++         if (ehframe_cfsis) {
++            Addr a_mid_lo, a_mid_hi;
++            Word mid, size, 
++                 lo = 0, 
++                 hi = ehframe_cfsis-1;
++            while (True) {
++               /* current unsearched space is from lo to hi, inclusive. */
++               if (lo > hi) break; /* not found */
++               mid      = (lo + hi) / 2;
++               a_mid_lo = di->cfsi[mid].base;
++               size     = di->cfsi[mid].len;
++               a_mid_hi = a_mid_lo + size - 1;
++               vg_assert(a_mid_hi >= a_mid_lo);
++               if (fde_initloc + fde_arange <= a_mid_lo) {
++                  hi = mid-1; continue;
++               }
++               if (fde_initloc > a_mid_hi) { lo = mid+1; continue; }
++               break;
++            }
++
++            /* The range this .debug_frame FDE covers has been already
++               covered in .eh_frame section.  Don't add it from .debug_frame
++               section again.  */            
++            if (lo <= hi)
++               continue;
++         }
++
+          adi.encoding      = the_CIEs[cie].address_encoding;
+-         adi.ehframe_image = ehframe_image;
+-         adi.ehframe_avma  = di->ehframe_avma;
++         adi.ehframe_image = frame_image;
++         adi.ehframe_avma  = for_eh ? di->ehframe_avma : 0;
+          adi.text_bias     = di->text_debug_bias;
+ 
+          if (di->trace_cfi)
+--- valgrind/coregrind/m_debuginfo/priv_readdwarf.h.jj	2009-08-19 15:37:44.000000000 +0200
++++ valgrind/coregrind/m_debuginfo/priv_readdwarf.h	2009-10-21 11:51:38.000000000 +0200
+@@ -62,7 +62,7 @@ void ML_(read_debuginfo_dwarf1) ( struct
+    -------------------- */
+ extern
+ void ML_(read_callframe_info_dwarf3)
+-    ( /*OUT*/struct _DebugInfo* di, UChar* ehframe );
++    ( /*OUT*/struct _DebugInfo* di, UChar* frame, SizeT sz, Bool for_eh );
+ 
+ 
+ #endif /* ndef __PRIV_READDWARF_H */
+--- valgrind/coregrind/m_debuginfo/priv_d3basics.h.jj	2009-08-19 15:37:44.000000000 +0200
++++ valgrind/coregrind/m_debuginfo/priv_d3basics.h	2009-10-21 10:49:47.000000000 +0200
+@@ -522,6 +522,9 @@ typedef enum
+     DW_OP_form_tls_address = 0x9b,
+     DW_OP_call_frame_cfa = 0x9c,
+     DW_OP_bit_piece = 0x9d,
++    /* DWARF 4 extensions.  */
++    DW_OP_implicit_value = 0x9e,
++    DW_OP_stack_value = 0x9f,
+     /* GNU extensions.  */
+     DW_OP_GNU_push_tls_address = 0xe0,
+     /* HP extensions.  */
+@@ -596,12 +599,13 @@ typedef
+ 
+ /* This describes the result of evaluating a DWARF3 expression.
+    GXR_Failure: failed; .word is an asciiz string summarising why
++   GXR_Addr:    evaluated to an address of the object, in .word
+    GXR_Value:   evaluated to a value, in .word
+    GXR_RegNo:   evaluated to a DWARF3 register number, in .word
+ */
+ typedef
+    struct { 
+-      enum { GXR_Failure, GXR_Value, GXR_RegNo } kind;
++      enum { GXR_Failure, GXR_Addr, GXR_Value, GXR_RegNo } kind;
+       UWord word;
+    }
+    GXResult;
+@@ -644,6 +648,10 @@ GXResult ML_(evaluate_Dwarf3_Expr) ( UCh
+    covered by the guard is also ignored. */
+ GXResult ML_(evaluate_trivial_GX)( GExpr* gx, const DebugInfo* di );
+ 
++/* Compute CFA for IP/SP/FP.  */
++Addr ML_(get_CFA) (Addr ip, Addr sp, Addr fp,
++                   Addr min_accessible, Addr max_accessible);
++
+ #endif /* ndef __PRIV_D3BASICS_H */
+ 
+ /*--------------------------------------------------------------------*/
+--- valgrind/coregrind/m_debuginfo/readelf.c.jj	2009-10-21 10:49:47.000000000 +0200
++++ valgrind/coregrind/m_debuginfo/readelf.c	2009-10-21 11:52:12.000000000 +0200
+@@ -1688,6 +1688,7 @@ Bool ML_(read_elf_debug_info) ( struct _
+       UChar*     debug_str_img    = NULL; /* .debug_str    (dwarf2) */
+       UChar*     debug_ranges_img = NULL; /* .debug_ranges (dwarf2) */
+       UChar*     debug_loc_img    = NULL; /* .debug_loc    (dwarf2) */
++      UChar*     debug_frame_img  = NULL; /* .debug_frame  (dwarf2) */
+       UChar*     dwarf1d_img      = NULL; /* .debug        (dwarf1) */
+       UChar*     dwarf1l_img      = NULL; /* .line         (dwarf1) */
+       UChar*     ehframe_img      = NULL; /* .eh_frame     (dwarf2) */
+@@ -1707,6 +1708,7 @@ Bool ML_(read_elf_debug_info) ( struct _
+       SizeT      debug_str_sz    = 0;
+       SizeT      debug_ranges_sz = 0;
+       SizeT      debug_loc_sz    = 0;
++      SizeT      debug_frame_sz  = 0;
+       SizeT      dwarf1d_sz      = 0;
+       SizeT      dwarf1l_sz      = 0;
+       SizeT      ehframe_sz      = 0;
+@@ -1764,6 +1766,7 @@ Bool ML_(read_elf_debug_info) ( struct _
+          FIND(".debug_str",     debug_str_sz,    debug_str_img)
+          FIND(".debug_ranges",  debug_ranges_sz, debug_ranges_img)
+          FIND(".debug_loc",     debug_loc_sz,    debug_loc_img)
++         FIND(".debug_frame",   debug_frame_sz,  debug_frame_img)
+ 
+          FIND(".debug",         dwarf1d_sz,      dwarf1d_img)
+          FIND(".line",          dwarf1l_sz,      dwarf1l_img)
+@@ -1956,6 +1959,8 @@ Bool ML_(read_elf_debug_info) ( struct _
+                FIND(need_dwarf2, ".debug_ranges", debug_ranges_sz, 
+                                                                debug_ranges_img)
+                FIND(need_dwarf2, ".debug_loc",    debug_loc_sz,  debug_loc_img)
++               FIND(need_dwarf2, ".debug_frame",  debug_frame_sz,
++                                                               debug_frame_img)
+                FIND(need_dwarf1, ".debug",        dwarf1d_sz,    dwarf1d_img)
+                FIND(need_dwarf1, ".line",         dwarf1l_sz,    dwarf1l_img)
+ 
+@@ -1996,7 +2001,11 @@ Bool ML_(read_elf_debug_info) ( struct _
+       /* Read .eh_frame (call-frame-info) if any */
+       if (ehframe_img) {
+          vg_assert(ehframe_sz == di->ehframe_size);
+-         ML_(read_callframe_info_dwarf3)( di, ehframe_img );
++         ML_(read_callframe_info_dwarf3)( di, ehframe_img, ehframe_sz, True );
++      }
++      if (debug_frame_sz) {
++         ML_(read_callframe_info_dwarf3)( di, debug_frame_img,
++                                          debug_frame_sz, False );
+       }
+ 
+       /* Read the stabs and/or dwarf2 debug information, if any.  It
+--- valgrind/coregrind/m_debuginfo/priv_storage.h.jj	2009-10-21 10:49:47.000000000 +0200
++++ valgrind/coregrind/m_debuginfo/priv_storage.h	2009-10-21 12:45:31.000000000 +0200
+@@ -649,6 +649,8 @@ extern void ML_(addVar)( struct _DebugIn
+    this after finishing adding entries to these tables. */
+ extern void ML_(canonicaliseTables) ( struct _DebugInfo* di );
+ 
++extern void ML_(canonicaliseCFI) ( struct _DebugInfo* di );
++
+ /* ------ Searching ------ */
+ 
+ /* Find a symbol-table index containing the specified pointer, or -1
+--- valgrind/coregrind/m_debuginfo/storage.c.jj	2009-08-19 15:37:44.000000000 +0200
++++ valgrind/coregrind/m_debuginfo/storage.c	2009-10-21 12:44:16.000000000 +0200
+@@ -1435,7 +1435,7 @@ static Int compare_DiCfSI ( void* va, vo
+    return 0;
+ }
+ 
+-static void canonicaliseCFI ( struct _DebugInfo* di )
++void ML_(canonicaliseCFI) ( struct _DebugInfo* di )
+ {
+    Word  i, j;
+    const Addr minAvma = 0;
+@@ -1528,7 +1528,7 @@ void ML_(canonicaliseTables) ( struct _D
+ {
+    canonicaliseSymtab ( di );
+    canonicaliseLoctab ( di );
+-   canonicaliseCFI ( di );
++   ML_(canonicaliseCFI) ( di );
+    canonicaliseVarInfo ( di );
+ }
+ 
+--- valgrind/coregrind/m_debuginfo/d3basics.c.jj	2009-08-19 15:37:44.000000000 +0200
++++ valgrind/coregrind/m_debuginfo/d3basics.c	2009-10-21 13:40:50.000000000 +0200
+@@ -443,7 +443,7 @@ static Bool bias_address( Addr* a, const
+ 
+ 
+ /* Evaluate a standard DWARF3 expression.  See detailed description in
+-   priv_d3basics.h. */
++   priv_d3basics.h.  Doesn't handle DW_OP_piece/DW_OP_bit_piece yet.  */
+ GXResult ML_(evaluate_Dwarf3_Expr) ( UChar* expr, UWord exprszB, 
+                                      GExpr* fbGX, RegSummary* regs,
+                                      const DebugInfo* di,
+@@ -482,8 +482,8 @@ GXResult ML_(evaluate_Dwarf3_Expr) ( UCh
+    Addr     stack[N_EXPR_STACK]; /* stack of addresses, as per D3 spec */
+    GXResult fbval, res;
+    Addr     a1;
+-   Word     sw1;
+-   UWord    uw1;
++   Word     sw1, sw2;
++   UWord    uw1, uw2;
+    Bool     ok;
+ 
+    sp = -1;
+@@ -568,12 +568,15 @@ GXResult ML_(evaluate_Dwarf3_Expr) ( UCh
+             switch (fbval.kind) {
+                case GXR_Failure:
+                   return fbval; /* propagate failure */
+-               case GXR_Value:
++               case GXR_Addr:
+                   a1 = fbval.word; break; /* use as-is */
+                case GXR_RegNo:
+                   ok = get_Dwarf_Reg( &a1, fbval.word, regs );
+                   if (!ok) return fbval; /* propagate failure */
+                   break;
++               case GXR_Value:
++                  FAIL("evaluate_Dwarf3_Expr: DW_OP_{implicit,stack}_value "
++                       "in DW_AT_frame_base");
+                default:
+                   vg_assert(0);
+             }
+@@ -599,11 +602,23 @@ GXResult ML_(evaluate_Dwarf3_Expr) ( UCh
+             a1 += sw1;
+             PUSH( a1 );
+             break;
++         case DW_OP_bregx:
++            if (!regs)
++               FAIL("evaluate_Dwarf3_Expr: DW_OP_breg* but no reg info");
++            a1 = 0;
++            uw1 = (UWord)read_leb128U( &expr );
++            if (!get_Dwarf_Reg( &a1, uw1, regs ))
++               FAIL("evaluate_Dwarf3_Expr: unhandled DW_OP_bregx reg value");
++            sw1 = (Word)read_leb128S( &expr );
++            a1 += sw1;
++            PUSH( a1 );
++            break;
+          /* As per comment on DW_OP_breg*, the following denote that
+             the value in question is in a register, not in memory.  So
+             we simply return failure. (iow, the expression is
+             malformed). */
+          case DW_OP_reg0 ... DW_OP_reg31:
++         case DW_OP_regx:
+             FAIL("evaluate_Dwarf3_Expr: DW_OP_reg* "
+                  "whilst evaluating for a value");
+             break;
+@@ -637,6 +652,229 @@ GXResult ML_(evaluate_Dwarf3_Expr) ( UCh
+                     "address not valid for client");
+             }
+             break;
++         case DW_OP_deref_size:
++            POP(uw1);
++            uw2 = *expr++;
++            if (VG_(am_is_valid_for_client)( (Addr)uw1, uw2,
++                                             VKI_PROT_READ )) {
++               switch (uw2) {
++                 case 1: uw1 = *(UChar*)uw1; break;
++                 case 2: uw1 = *(UShort*)uw1; break;
++                 case 4: uw1 = *(UInt*)uw1; break;
++                 case 8: uw1 = *(ULong*)uw1; break;
++                 default:
++                    FAIL("warning: evaluate_Dwarf3_Expr: unhandled "
++                         "DW_OP_deref_size size");
++               }
++               PUSH(uw1);
++            } else {
++               FAIL("warning: evaluate_Dwarf3_Expr: DW_OP_deref_size: "
++                    "address not valid for client");
++            }
++            break;
++         case DW_OP_lit0 ... DW_OP_lit31:
++            PUSH(opcode - DW_OP_lit0);
++            break;
++         case DW_OP_const1u:
++	    uw1 = *expr++;
++	    PUSH(uw1);
++            break;
++         case DW_OP_const2u:
++	    uw1 = *(UShort *)expr;
++	    expr += 2;
++	    PUSH(uw1);
++	    break;
++         case DW_OP_const4u:
++	    uw1 = *(UInt *)expr;
++	    expr += 4;
++	    PUSH(uw1);
++	    break;
++         case DW_OP_const8u:
++	    uw1 = *(ULong *)expr;
++	    expr += 8;
++	    PUSH(uw1);
++	    break;
++         case DW_OP_constu:
++            uw1 = read_leb128U( &expr );
++            PUSH(uw1);
++            break;
++         case DW_OP_const1s:
++	    uw1 = *(Char *) expr;
++	    expr++;
++	    PUSH(uw1);
++            break;
++         case DW_OP_const2s:
++	    uw1 = *(Short *)expr;
++	    expr += 2;
++	    PUSH(uw1);
++	    break;
++         case DW_OP_const4s:
++	    uw1 = *(Int *)expr;
++	    expr += 4;
++	    PUSH(uw1);
++	    break;
++         case DW_OP_const8s:
++	    uw1 = *(Long *)expr;
++	    expr += 8;
++	    PUSH(uw1);
++	    break;
++         case DW_OP_consts:
++            uw1 = read_leb128S( &expr );
++            PUSH(uw1);
++            break;
++         case DW_OP_dup:
++	    POP(uw1);
++	    PUSH(uw1);
++	    PUSH(uw1);
++	    break;
++	 case DW_OP_drop:
++	    POP(uw1);
++	    break;
++         case DW_OP_over:
++            uw1 = 1;
++            goto do_pick;
++	 case DW_OP_pick:
++	    uw1 = *expr++;
++         do_pick:
++            if (sp < (Int) uw1)
++               FAIL("evaluate_Dwarf3_Expr: stack underflow");
++            uw1 = stack[sp - uw1];
++            PUSH(uw1);
++            break;
++         case DW_OP_swap:
++            if (sp < 1)
++               FAIL("evaluate_Dwarf3_Expr: stack underflow");
++            uw1 = stack[sp];
++            stack[sp] = stack[sp - 1];
++            stack[sp - 1] = uw1;
++            break;
++         case DW_OP_rot:
++            if (sp < 2)
++               FAIL("evaluate_Dwarf3_Expr: stack underflow");
++            uw1 = stack[sp];
++            stack[sp] = stack[sp - 1];
++            stack[sp - 1] = stack[sp - 2];
++            stack[sp - 2] = uw1;
++            break;
++         case DW_OP_abs:
++            POP(sw1);
++            if (sw1 < 0)
++               sw1 = -sw1;
++            PUSH(sw1);
++            break;
++         case DW_OP_div:
++            POP(sw2);
++            if (sw2 == 0)
++               FAIL("evaluate_Dwarf3_Expr: division by zero");
++            POP(sw1);
++            sw1 /= sw2;
++            PUSH(sw1);
++            break;
++         case DW_OP_mod:
++            POP(sw2);
++            if (sw2 == 0)
++               FAIL("evaluate_Dwarf3_Expr: division by zero");
++            POP(sw1);
++            sw1 %= sw2;
++            PUSH(sw1);
++            break;
++#define BINARY(name, op, s) \
++         case DW_OP_##name:		\
++            POP(s##w2);			\
++            POP(s##w1);			\
++            s##w1 = s##w1 op s##w2;	\
++            PUSH(s##w1);		\
++            break
++#define UNARY(name, op, s) \
++         case DW_OP_##name:		\
++            POP(s##w1);			\
++            s##w1 = op s##w1;		\
++            PUSH(s##w1);		\
++            break
++         BINARY (and, &, u);
++         BINARY (minus, -, u);
++         BINARY (mul, *, u);
++         UNARY (neg, -, u);
++         UNARY (not, ~, u);
++         BINARY (or, |, u);
++         BINARY (plus, +, u);
++         BINARY (shl, <<, u);
++         BINARY (shr, >>, u);
++         BINARY (shra, >>, s);
++         BINARY (xor, ^, u);
++         BINARY (le, <=, s);
++         BINARY (lt, <, s);
++         BINARY (ge, >=, s);
++         BINARY (gt, >, s);
++         BINARY (ne, !=, u);
++         BINARY (eq, ==, u);
++#undef UNARY
++#undef BINARY
++         case DW_OP_skip:
++            sw1 = *(Short *)expr;
++            expr += 2;
++            if (sw1 < 0 && expr < limit - exprszB - sw1)
++               FAIL("evaluate_Dwarf3_Expr: DW_OP_skip before start of expr");
++            expr += sw1;
++            break;
++         case DW_OP_bra:
++            sw1 = *(Short *)expr;
++            expr += 2;
++            if (sw1 < 0 && expr < limit - exprszB - sw1)
++               FAIL("evaluate_Dwarf3_Expr: DW_OP_bra before start of expr");
++            POP(uw1);
++            if (uw1)
++               expr += sw1;
++            break;
++         case DW_OP_nop:
++            break;
++         case DW_OP_call_frame_cfa:
++            if (!regs)
++               FAIL("evaluate_Dwarf3_Expr: DW_OP_call_frame_cfa but no reg info");
++            uw1 = ML_(get_CFA)(regs->ip, regs->sp, regs->fp, 0, ~(UWord) 0);
++            if (!uw1)
++               FAIL("evaluate_Dwarf3_Expr: Could not resolve "
++                    "DW_OP_call_frame_cfa");
++            PUSH(uw1);
++            break;
++         case DW_OP_implicit_value:
++            sw1 = (Word)read_leb128S( &expr );
++            uw1 = 0;
++            switch (sw1) {
++               case 1:
++                  uw1 = *(UChar *) expr;
++                  expr += 1;
++                  break;
++               case 2:
++                  uw1 = *(UShort *) expr;
++                  expr += 2;
++                  break;
++               case 4:
++                  uw1 = *(UInt *) expr;
++                  expr += 4;
++                  break;
++               case 8:
++                  uw1 = *(ULong *) expr;
++                  expr += 8;
++                  break;
++               default:
++                  FAIL("evaluate_Dwarf3_Expr: Unhandled "
++                       "DW_OP_implicit_value size");
++            }
++            if (expr != limit)
++               FAIL("evaluate_Dwarf3_Expr: DW_OP_implicit_value "
++                    "does not terminate expression");
++            res.word = uw1;
++            res.kind = GXR_Value;
++            return res;
++         case DW_OP_stack_value:
++            POP (uw1);
++            res.word = uw1;
++            res.kind = GXR_Value;
++            if (expr != limit)
++               FAIL("evaluate_Dwarf3_Expr: DW_OP_stack_value "
++                    "does not terminate expression");
++            break;
+          default:
+             if (!VG_(clo_xml))
+                VG_(message)(Vg_DebugMsg, 
+@@ -650,7 +888,7 @@ GXResult ML_(evaluate_Dwarf3_Expr) ( UCh
+ 
+    vg_assert(sp >= 0 && sp < N_EXPR_STACK);
+    res.word = stack[sp];
+-   res.kind = GXR_Value;
++   res.kind = GXR_Addr;
+    return res;
+  
+ #  undef POP
+@@ -829,12 +1067,15 @@ GXResult ML_(evaluate_trivial_GX)( GExpr
+          if (!badness)
+             badness = "trivial GExpr denotes register (2)";
+       }
+-      else {
++      else if (0) {
+          VG_(printf)(" ML_(evaluate_trivial_GX): unhandled:\n   ");
+          ML_(pp_GX)( gx );
+          VG_(printf)("\n");
+          tl_assert(0);
+       }
++      else
++         if (!badness)
++            badness = "non-trivial GExpr";
+ 
+       VG_(addToXA)( results, &thisResult );
+ 
+@@ -884,7 +1125,7 @@ GXResult ML_(evaluate_trivial_GX)( GExpr
+ 
+    /* Well, we have success.  All subexpressions evaluated, and 
+       they all agree.  Hurrah. */
+-   res.kind = GXR_Value;
++   res.kind = GXR_Addr;
+    res.word = (UWord)mul->ul; /* NB: narrowing from ULong */
+    VG_(deleteXA)( results );
+    return res;
+@@ -896,6 +1137,8 @@ void ML_(pp_GXResult) ( GXResult res )
+    switch (res.kind) {
+       case GXR_Failure:
+          VG_(printf)("GXR_Failure(%s)", (HChar*)res.word); break;
++      case GXR_Addr:
++         VG_(printf)("GXR_Addr(0x%lx)", res.word); break;
+       case GXR_Value:
+          VG_(printf)("GXR_Value(0x%lx)", res.word); break;
+       case GXR_RegNo:
+--- valgrind/coregrind/m_debuginfo/debuginfo.c.jj	2009-10-21 10:49:47.000000000 +0200
++++ valgrind/coregrind/m_debuginfo/debuginfo.c	2009-10-21 10:49:47.000000000 +0200
+@@ -2003,6 +2003,62 @@ static void cfsi_cache__invalidate ( voi
+ }
+ 
+ 
++Addr ML_(get_CFA) (Addr ip, Addr sp, Addr fp,
++                   Addr min_accessible, Addr max_accessible )
++{
++   Bool       ok;
++   DebugInfo* di;
++   DiCfSI*    cfsi = NULL;
++   Addr       cfa;
++   CfiExprEvalContext eec;
++   UWord hash = ip % N_CFSI_CACHE;
++   CFSICacheEnt* ce = &cfsi_cache[hash];
++
++   if (LIKELY(ce->ip == ip) && LIKELY(ce->di != NULL)) {
++      /* found an entry in the cache .. */
++   } else {
++      /* not found in cache.  Search and update. */
++      ce->ip = ip;
++      find_DiCfSI( &ce->di, &ce->ix, ip );
++   }
++
++   if (UNLIKELY(ce->di == (DebugInfo*)1)) {
++      /* no DiCfSI for this address */
++      return 0;
++   } else {
++      /* found a DiCfSI for this address */
++      di = ce->di;
++      cfsi = &di->cfsi[ ce->ix ];
++   }
++
++   if (UNLIKELY(cfsi == NULL))
++      return 0; /* no info.  Nothing we can do. */
++
++   /* Compute the CFA. */
++   cfa = 0;
++   switch (cfsi->cfa_how) {
++      case CFIC_SPREL: 
++         cfa = cfsi->cfa_off + sp;
++         break;
++      case CFIC_FPREL: 
++         cfa = cfsi->cfa_off + fp;
++         break;
++      case CFIC_EXPR: 
++         eec.ipHere = ip;
++         eec.spHere = sp;
++         eec.fpHere = fp;
++         eec.min_accessible = min_accessible;
++         eec.max_accessible = max_accessible;
++         ok = True;
++         cfa = evalCfiExpr(di->cfsi_exprs, cfsi->cfa_off, &eec, &ok );
++         if (!ok) return 0;
++         break;
++      default: 
++         vg_assert(0);
++   }
++   return cfa;
++}
++
+ /* The main function for DWARF2/3 CFI-based stack unwinding.
+    Given an IP/SP/FP triple, produce the IP/SP/FP values for the
+    previous frame, if possible. */
+@@ -2346,7 +2402,7 @@ static Bool data_address_is_in_var ( /*O
+       VG_(printf)("\n");
+    }
+ 
+-   if (res.kind == GXR_Value 
++   if (res.kind == GXR_Addr 
+        && res.word <= data_addr
+        && data_addr < res.word + var_szB) {
+       *offset = data_addr - res.word;
+@@ -3057,7 +3113,7 @@ void analyse_deps ( /*MOD*/XArray* /* of
+    vg_assert(res_sp_6k.kind == res_fp_6k.kind);
+    vg_assert(res_sp_6k.kind == res_fp_7k.kind);
+ 
+-   if (res_sp_6k.kind == GXR_Value) {
++   if (res_sp_6k.kind == GXR_Addr) {
+       StackBlock block;
+       GXResult res;
+       UWord sp_delta = res_sp_7k.word - res_sp_6k.word;
+@@ -3074,7 +3130,7 @@ void analyse_deps ( /*MOD*/XArray* /* of
+          regs.sp = regs.fp = 0;
+          regs.ip = ip;
+          res = ML_(evaluate_GX)( var->gexpr, var->fbGX, &regs, di );
+-         tl_assert(res.kind == GXR_Value);
++         tl_assert(res.kind == GXR_Addr);
+          if (debug)
+          VG_(printf)("   %5ld .. %5ld (sp) %s\n",
+                      res.word, res.word + ((UWord)mul.ul) - 1, var->name);
+@@ -3093,7 +3149,7 @@ void analyse_deps ( /*MOD*/XArray* /* of
+          regs.sp = regs.fp = 0;
+          regs.ip = ip;
+          res = ML_(evaluate_GX)( var->gexpr, var->fbGX, &regs, di );
+-         tl_assert(res.kind == GXR_Value);
++         tl_assert(res.kind == GXR_Addr);
+          if (debug)
+          VG_(printf)("   %5ld .. %5ld (FP) %s\n",
+                      res.word, res.word + ((UWord)mul.ul) - 1, var->name);
+@@ -3308,7 +3364,7 @@ void* /* really, XArray* of GlobalBlock 
+             res = ML_(evaluate_trivial_GX)( var->gexpr, di );
+ 
+             /* Not a constant address => not interesting */
+-            if (res.kind != GXR_Value) {
++            if (res.kind != GXR_Addr) {
+                if (0) VG_(printf)("FAIL\n");
+                continue;
+             }
+--- valgrind/coregrind/m_debuginfo/tytypes.c.jj	2009-08-19 15:37:44.000000000 +0200
++++ valgrind/coregrind/m_debuginfo/tytypes.c	2009-10-21 10:49:47.000000000 +0200
+@@ -766,7 +766,7 @@ XArray* /*UChar*/ ML_(describe_type)( /*
+                   ML_(pp_GXResult)(res);
+                   VG_(printf)("\n");
+                }
+-               if (res.kind != GXR_Value)
++               if (res.kind != GXR_Addr)
+                   continue;
+                mul = ML_(sizeOfType)( tyents, field->Te.Field.typeR );
+                if (mul.b != True)

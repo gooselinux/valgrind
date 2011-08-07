@@ -1,0 +1,240 @@
+--- valgrind/coregrind/m_syswrap/priv_syswrap-linux.h	2009-10-27 21:31:49.852433085 +0100
++++ valgrind/coregrind/m_syswrap/priv_syswrap-linux.h	2009-10-27 21:25:05.000000000 +0100
+@@ -47,6 +47,7 @@ extern SysRes ML_(do_fork_clone) ( Threa
+ DECL_TEMPLATE(linux, sys_mount);
+ DECL_TEMPLATE(linux, sys_oldumount);
+ DECL_TEMPLATE(linux, sys_umount);
++DECL_TEMPLATE(linux, sys_perf_counter_open);
+ 
+ // POSIX, but various sub-cases differ between Linux and Darwin.
+ DECL_TEMPLATE(linux, sys_fcntl);
+--- valgrind/coregrind/m_syswrap/syswrap-amd64-linux.c	2009-10-27 21:31:49.852433085 +0100
++++ valgrind/coregrind/m_syswrap/syswrap-amd64-linux.c	2009-10-27 21:25:05.000000000 +0100
+@@ -1375,7 +1375,12 @@ const SyscallTableEntry ML_(syscall_tabl
+    LINXY(__NR_epoll_create1,     sys_epoll_create1),    // 291
+    //   (__NR_dup3,              sys_ni_syscall)        // 292
+    LINXY(__NR_pipe2,             sys_pipe2),            // 293
+-   LINXY(__NR_inotify_init1,     sys_inotify_init1),     // 294
++   LINXY(__NR_inotify_init1,     sys_inotify_init1),    // 294
++
++   //   (__NR_preadv,            sys_ni_syscall)        // 295
++   //   (__NR_pwritev,           sys_ni_syscall)        // 296
++   //   (__NR_rt_tgsigqueueinfo, sys_ni_syscall)        // 297
++   LINXY(__NR_perf_counter_open, sys_perf_counter_open) // 298
+ };
+ 
+ const UInt ML_(syscall_table_size) = 
+--- valgrind/coregrind/m_syswrap/syswrap-linux.c	2009-10-27 21:31:49.853433112 +0100
++++ valgrind/coregrind/m_syswrap/syswrap-linux.c	2009-10-27 21:25:05.000000000 +0100
+@@ -2410,6 +2410,30 @@ PRE(sys_stime)
+    PRE_MEM_READ( "stime(t)", ARG1, sizeof(vki_time_t) );
+ }
+ 
++PRE(sys_perf_counter_open)
++{
++   PRINT("sys_perf_counter_open ( %#lx, %ld, %ld, %ld, %ld )",
++         ARG1,ARG2,ARG3,ARG4,ARG5);
++   PRE_REG_READ5(long, "perf_counter_open",
++                 struct vki_perf_counter_attr *, attr,
++                 vki_pid_t, pid, int, cpu, int, group_fd,
++                 unsigned long, flags);
++   PRE_MEM_READ( "perf_counter_open(attr)",
++                 ARG1, sizeof(struct vki_perf_counter_attr) );
++}
++
++POST(sys_perf_counter_open)
++{
++   vg_assert(SUCCESS);
++   if (!ML_(fd_allowed)(RES, "perf_counter_open", tid, True)) {
++      VG_(close)(RES);
++      SET_STATUS_Failure( VKI_EMFILE );
++   } else {
++      if (VG_(clo_track_fds))
++         ML_(record_fd_open_nameless)(tid, RES);
++   }
++}
++
+ /* ---------------------------------------------------------------------
+    utime wrapper
+    ------------------------------------------------------------------ */
+--- valgrind/coregrind/m_syswrap/syswrap-ppc32-linux.c	2009-10-27 21:31:49.855432715 +0100
++++ valgrind/coregrind/m_syswrap/syswrap-ppc32-linux.c	2009-10-27 21:25:05.000000000 +0100
+@@ -1867,7 +1867,11 @@ const SyscallTableEntry ML_(syscall_tabl
+    LINXY(__NR_epoll_create1,     sys_epoll_create1),    // 315
+    //   (__NR_dup3,              sys_ni_syscall)        // 316
+    LINXY(__NR_pipe2,             sys_pipe2),            // 317
+-   LINX_(__NR_inotify_init1,     sys_inotify_init1)     // 318
++   LINXY(__NR_inotify_init1,     sys_inotify_init1),    // 318
++   LINXY(__NR_perf_counter_open, sys_perf_counter_open) // 319
++   //   (__NR_preadv,            sys_ni_syscall)        // 320
++   //   (__NR_pwritev,           sys_ni_syscall)        // 321
++   //   (__NR_rt_tgsigqueueinfo, sys_ni_syscall)        // 322
+ };
+ 
+ const UInt ML_(syscall_table_size) = 
+--- valgrind/coregrind/m_syswrap/syswrap-ppc64-linux.c	2009-10-27 21:31:49.855432715 +0100
++++ valgrind/coregrind/m_syswrap/syswrap-ppc64-linux.c	2009-10-27 21:25:05.000000000 +0100
+@@ -1191,10 +1191,10 @@ const SyscallTableEntry ML_(syscall_tabl
+    GENX_(__NR_rename,            sys_rename),             //  38
+    GENX_(__NR_mkdir,             sys_mkdir),              //  39
+ 
+-// _____(__NR_rmdir,             sys_rmdir),              //  40
++   GENX_(__NR_rmdir,             sys_rmdir),              //  40
+    GENXY(__NR_dup,               sys_dup),                //  41
+    LINXY(__NR_pipe,              sys_pipe),               //  42
+-   GENXY(__NR_times,             sys_times),              // 43
++   GENXY(__NR_times,             sys_times),              //  43
+ // _____(__NR_prof,              sys_prof),               //  44
+ 
+    GENX_(__NR_brk,               sys_brk),                //  45
+@@ -1355,7 +1355,7 @@ const SyscallTableEntry ML_(syscall_tabl
+ 
+ // _____(__NR_rt_sigpending,     sys_rt_sigpending),      // 175
+    LINXY(__NR_rt_sigtimedwait,   sys_rt_sigtimedwait),    // 176
+-// _____(__NR_rt_sigqueueinfo,   sys_rt_sigqueueinfo),    // 177
++   LINXY(__NR_rt_sigqueueinfo,   sys_rt_sigqueueinfo),    // 177
+ // _____(__NR_rt_sigsuspend,     sys_rt_sigsuspend),      // 178
+    GENXY(__NR_pread64,           sys_pread64),            // 179
+ 
+@@ -1507,7 +1507,11 @@ const SyscallTableEntry ML_(syscall_tabl
+    LINXY(__NR_epoll_create1,     sys_epoll_create1),    // 315
+    //   (__NR_dup3,              sys_ni_syscall)        // 316
+    LINXY(__NR_pipe2,             sys_pipe2),            // 317
+-   LINX_(__NR_inotify_init1,     sys_inotify_init1)     // 318
++   LINXY(__NR_inotify_init1,     sys_inotify_init1),    // 318
++   LINXY(__NR_perf_counter_open, sys_perf_counter_open) // 319
++   //   (__NR_preadv,            sys_ni_syscall)        // 320
++   //   (__NR_pwritev,           sys_ni_syscall)        // 321
++   //   (__NR_rt_tgsigqueueinfo, sys_ni_syscall)        // 322
+ };
+ 
+ const UInt ML_(syscall_table_size) = 
+--- valgrind/coregrind/m_syswrap/syswrap-x86-linux.c	2009-10-27 21:31:49.854432906 +0100
++++ valgrind/coregrind/m_syswrap/syswrap-x86-linux.c	2009-10-27 21:25:05.000000000 +0100
+@@ -2254,7 +2254,12 @@ const SyscallTableEntry ML_(syscall_tabl
+ 
+    //   (__NR_dup3,              sys_ni_syscall)        // 330
+    LINXY(__NR_pipe2,             sys_pipe2),            // 331
+-   LINX_(__NR_inotify_init1,     sys_inotify_init1)     // 332
++   LINXY(__NR_inotify_init1,     sys_inotify_init1),    // 332
++   //   (__NR_preadv,            sys_ni_syscall)        // 333
++   //   (__NR_pwritev,           sys_ni_syscall)        // 334
++
++   //   (__NR_rt_tgsigqueueinfo, sys_ni_syscall)        // 335
++   LINXY(__NR_perf_counter_open, sys_perf_counter_open) // 336
+ };
+ 
+ const UInt ML_(syscall_table_size) = 
+--- valgrind/include/vki/vki-linux.h	2009-08-19 15:37:07.000000000 +0200
++++ valgrind/include/vki/vki-linux.h	2009-10-27 21:50:13.000000000 +0100
+@@ -2570,6 +2570,57 @@ struct	vki_iwreq 
+ 	union	vki_iwreq_data	u;
+ };
+ 
++/*--------------------------------------------------------------------*/
++// From linux-2.6.31.5/include/linux/perf_counter.h
++/*--------------------------------------------------------------------*/
++
++struct vki_perf_counter_attr {
++
++	/*
++	 * Major type: hardware/software/tracepoint/etc.
++	 */
++	__vki_u32			type;
++
++	/*
++	 * Size of the attr structure, for fwd/bwd compat.
++	 */
++	__vki_u32			size;
++
++	/*
++	 * Type specific configuration information.
++	 */
++	__vki_u64			config;
++
++	union {
++		__vki_u64		sample_period;
++		__vki_u64		sample_freq;
++	};
++
++	__vki_u64			sample_type;
++	__vki_u64			read_format;
++
++	__vki_u64			disabled       :  1, /* off by default        */
++					inherit	       :  1, /* children inherit it   */
++					pinned	       :  1, /* must always be on PMU */
++					exclusive      :  1, /* only group on PMU     */
++					exclude_user   :  1, /* don't count user      */
++					exclude_kernel :  1, /* ditto kernel          */
++					exclude_hv     :  1, /* ditto hypervisor      */
++					exclude_idle   :  1, /* don't count when idle */
++					mmap           :  1, /* include mmap data     */
++					comm	       :  1, /* include comm data     */
++					freq           :  1, /* use freq, not period  */
++					inherit_stat   :  1, /* per task counts       */
++					enable_on_exec :  1, /* next exec enables     */
++					task           :  1, /* trace fork/exit       */
++
++					__reserved_1   : 50;
++
++	__vki_u32			wakeup_events;	/* wakeup every n events */
++	__vki_u32			__reserved_2;
++
++	__vki_u64			__reserved_3;
++};
+ 
+ #endif // __VKI_LINUX_H
+ 
+--- valgrind/include/vki/vki-scnums-amd64-linux.h	2009-08-19 15:37:07.000000000 +0200
++++ valgrind/include/vki/vki-scnums-amd64-linux.h	2009-10-27 21:50:13.000000000 +0100
+@@ -376,6 +376,10 @@
+ #define __NR_dup3               292
+ #define __NR_pipe2              293
+ #define __NR_inotify_init1      294
++#define __NR_preadv             295
++#define __NR_pwritev            296
++#define __NR_rt_tgsigqueueinfo  297
++#define __NR_perf_counter_open  298
+ 
+ #endif /* __VKI_SCNUMS_AMD64_LINUX_H */
+ 
+--- valgrind/include/vki/vki-scnums-ppc32-linux.h	2009-08-19 15:37:07.000000000 +0200
++++ valgrind/include/vki/vki-scnums-ppc32-linux.h	2009-10-27 21:50:13.000000000 +0100
+@@ -361,6 +361,10 @@
+ #define __NR_dup3               316
+ #define __NR_pipe2              317
+ #define __NR_inotify_init1      318
++#define __NR_perf_counter_open  319
++#define __NR_preadv             320
++#define __NR_pwritev            321
++#define __NR_rt_tgsigqueueinfo  322
+ 
+ #endif /* __VKI_SCNUMS_PPC32_LINUX_H */
+ 
+--- valgrind/include/vki/vki-scnums-ppc64-linux.h	2009-08-19 15:37:07.000000000 +0200
++++ valgrind/include/vki/vki-scnums-ppc64-linux.h	2009-10-27 21:50:13.000000000 +0100
+@@ -353,6 +353,10 @@
+ #define __NR_dup3               316
+ #define __NR_pipe2              317
+ #define __NR_inotify_init1      318
++#define __NR_perf_counter_open  319
++#define __NR_preadv             320
++#define __NR_pwritev            321
++#define __NR_rt_tgsigqueueinfo  322
+ 
+ #endif /* __VKI_SCNUMS_PPC64_LINUX_H */
+ 
+diff -upr valgrind/include/vki/vki-scnums-x86-linux.h valgrind/include/vki/vki-scnums-x86-linux.h
+--- valgrind/include/vki/vki-scnums-x86-linux.h	2009-08-19 15:37:07.000000000 +0200
++++ valgrind/include/vki/vki-scnums-x86-linux.h	2009-10-27 21:50:13.000000000 +0100
+@@ -367,6 +367,10 @@
+ #define __NR_dup3               330
+ #define __NR_pipe2              331
+ #define __NR_inotify_init1      332
++#define __NR_preadv             333
++#define __NR_pwritev            334
++#define __NR_rt_tgsigqueueinfo  335
++#define __NR_perf_counter_open  336
+ 
+ #endif /* __VKI_SCNUMS_X86_LINUX_H */
+ 

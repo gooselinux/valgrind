@@ -1,0 +1,154 @@
+--- valgrind/coregrind/m_syswrap/syswrap-amd64-linux.c.jj	2009-10-27 22:07:26.000000000 +0100
++++ valgrind/coregrind/m_syswrap/syswrap-amd64-linux.c	2009-10-28 09:24:57.307058551 +0100
+@@ -1377,8 +1377,8 @@ const SyscallTableEntry ML_(syscall_tabl
+    LINXY(__NR_pipe2,             sys_pipe2),            // 293
+    LINXY(__NR_inotify_init1,     sys_inotify_init1),    // 294
+ 
+-   //   (__NR_preadv,            sys_ni_syscall)        // 295
+-   //   (__NR_pwritev,           sys_ni_syscall)        // 296
++   LINXY(__NR_preadv,            sys_preadv),           // 295
++   LINX_(__NR_pwritev,           sys_pwritev),          // 296
+    //   (__NR_rt_tgsigqueueinfo, sys_ni_syscall)        // 297
+    LINXY(__NR_perf_counter_open, sys_perf_counter_open) // 298
+ };
+--- valgrind/coregrind/m_syswrap/syswrap-x86-linux.c.jj	2009-10-27 22:07:26.000000000 +0100
++++ valgrind/coregrind/m_syswrap/syswrap-x86-linux.c	2009-10-28 09:24:08.631308771 +0100
+@@ -2255,8 +2255,8 @@ const SyscallTableEntry ML_(syscall_tabl
+    //   (__NR_dup3,              sys_ni_syscall)        // 330
+    LINXY(__NR_pipe2,             sys_pipe2),            // 331
+    LINXY(__NR_inotify_init1,     sys_inotify_init1),    // 332
+-   //   (__NR_preadv,            sys_ni_syscall)        // 333
+-   //   (__NR_pwritev,           sys_ni_syscall)        // 334
++   LINXY(__NR_preadv,            sys_preadv),           // 333
++   LINX_(__NR_pwritev,           sys_pwritev),          // 334
+ 
+    //   (__NR_rt_tgsigqueueinfo, sys_ni_syscall)        // 335
+    LINXY(__NR_perf_counter_open, sys_perf_counter_open) // 336
+--- valgrind/coregrind/m_syswrap/syswrap-ppc64-linux.c.jj	2009-10-27 22:07:26.000000000 +0100
++++ valgrind/coregrind/m_syswrap/syswrap-ppc64-linux.c	2009-10-28 09:28:43.563071713 +0100
+@@ -1508,9 +1508,9 @@ const SyscallTableEntry ML_(syscall_tabl
+    //   (__NR_dup3,              sys_ni_syscall)        // 316
+    LINXY(__NR_pipe2,             sys_pipe2),            // 317
+    LINXY(__NR_inotify_init1,     sys_inotify_init1),    // 318
+-   LINXY(__NR_perf_counter_open, sys_perf_counter_open) // 319
+-   //   (__NR_preadv,            sys_ni_syscall)        // 320
+-   //   (__NR_pwritev,           sys_ni_syscall)        // 321
++   LINXY(__NR_perf_counter_open, sys_perf_counter_open),// 319
++   LINXY(__NR_preadv,            sys_preadv),           // 320
++   LINX_(__NR_pwritev,           sys_pwritev)           // 321
+    //   (__NR_rt_tgsigqueueinfo, sys_ni_syscall)        // 322
+ };
+ 
+--- valgrind/coregrind/m_syswrap/syswrap-linux.c.jj	2009-10-27 22:07:26.000000000 +0100
++++ valgrind/coregrind/m_syswrap/syswrap-linux.c	2009-10-28 09:40:32.276183692 +0100
+@@ -3009,6 +3009,83 @@ PRE(sys_faccessat)
+    PRE_MEM_RASCIIZ( "faccessat(pathname)", ARG2 );
+ }
+ 
++PRE(sys_preadv)
++{
++   Int i;
++   struct vki_iovec * vec;
++   ULong off = (ULong)ARG4;
++#if VG_WORDSIZE == 4
++   off |= (ULong)ARG5 << 32;
++#endif
++   *flags |= SfMayBlock;
++   PRINT("sys_preadv ( %ld, %#lx, %llu, %llu )",ARG1,ARG2,(ULong)ARG3,off);
++   PRE_REG_READ5(ssize_t, "preadv",
++                 unsigned long, fd, const struct iovec *, vector,
++                 unsigned long, count, unsigned long, off_lo,
++                 unsigned long, off_hi);
++   if (!ML_(fd_allowed)(ARG1, "preadv", tid, False)) {
++      SET_STATUS_Failure( VKI_EBADF );
++   } else {
++      PRE_MEM_READ( "preadv(vector)", ARG2, ARG3 * sizeof(struct vki_iovec) );
++
++      if (ARG2 != 0) {
++         /* ToDo: don't do any of the following if the vector is invalid */
++         vec = (struct vki_iovec *)ARG2;
++         for (i = 0; i < (Int)ARG3; i++)
++            PRE_MEM_WRITE( "preadv(vector[...])",
++                           (Addr)vec[i].iov_base, vec[i].iov_len );
++      }
++   }
++}
++
++POST(sys_preadv)
++{
++   vg_assert(SUCCESS);
++   if (RES > 0) {
++      Int i;
++      struct vki_iovec * vec = (struct vki_iovec *)ARG2;
++      Int remains = RES;
++
++      /* RES holds the number of bytes read. */
++      for (i = 0; i < (Int)ARG3; i++) {
++	 Int nReadThisBuf = vec[i].iov_len;
++	 if (nReadThisBuf > remains) nReadThisBuf = remains;
++	 POST_MEM_WRITE( (Addr)vec[i].iov_base, nReadThisBuf );
++	 remains -= nReadThisBuf;
++	 if (remains < 0) VG_(core_panic)("preadv: remains < 0");
++      }
++   }
++}
++
++PRE(sys_pwritev)
++{
++   Int i;
++   struct vki_iovec * vec;
++   ULong off = (ULong)ARG4;
++#if VG_WORDSIZE == 4
++   off |= (ULong)ARG5 << 32;
++#endif
++   *flags |= SfMayBlock;
++   PRINT("sys_pwritev ( %ld, %#lx, %llu, %llu )",ARG1,ARG2,(ULong)ARG3,off);
++   PRE_REG_READ5(ssize_t, "pwritev",
++                 unsigned long, fd, const struct iovec *, vector,
++                 unsigned long, count, unsigned long, off_lo,
++                 unsigned long, off_hi);
++   if (!ML_(fd_allowed)(ARG1, "pwritev", tid, False)) {
++      SET_STATUS_Failure( VKI_EBADF );
++   } else {
++      PRE_MEM_READ( "pwritev(vector)", 
++		     ARG2, ARG3 * sizeof(struct vki_iovec) );
++      if (ARG2 != 0) {
++         /* ToDo: don't do any of the following if the vector is invalid */
++         vec = (struct vki_iovec *)ARG2;
++         for (i = 0; i < (Int)ARG3; i++)
++            PRE_MEM_READ( "pwritev(vector[...])",
++                           (Addr)vec[i].iov_base, vec[i].iov_len );
++      }
++   }
++}
++
+ /* ---------------------------------------------------------------------
+    key retention service wrappers
+    ------------------------------------------------------------------ */
+--- valgrind/coregrind/m_syswrap/priv_syswrap-linux.h.jj	2009-10-27 22:07:26.000000000 +0100
++++ valgrind/coregrind/m_syswrap/priv_syswrap-linux.h	2009-10-28 09:22:42.735058008 +0100
+@@ -163,6 +163,9 @@ DECL_TEMPLATE(linux, sys_fchmodat);
+ DECL_TEMPLATE(linux, sys_faccessat);
+ DECL_TEMPLATE(linux, sys_utimensat);
+ 
++DECL_TEMPLATE(linux, sys_preadv);
++DECL_TEMPLATE(linux, sys_pwritev);
++
+ DECL_TEMPLATE(linux, sys_add_key);
+ DECL_TEMPLATE(linux, sys_request_key);
+ DECL_TEMPLATE(linux, sys_keyctl);
+--- valgrind/coregrind/m_syswrap/syswrap-ppc32-linux.c.jj	2009-10-27 22:07:26.000000000 +0100
++++ valgrind/coregrind/m_syswrap/syswrap-ppc32-linux.c	2009-10-28 09:28:12.173183524 +0100
+@@ -1868,9 +1868,9 @@ const SyscallTableEntry ML_(syscall_tabl
+    //   (__NR_dup3,              sys_ni_syscall)        // 316
+    LINXY(__NR_pipe2,             sys_pipe2),            // 317
+    LINXY(__NR_inotify_init1,     sys_inotify_init1),    // 318
+-   LINXY(__NR_perf_counter_open, sys_perf_counter_open) // 319
+-   //   (__NR_preadv,            sys_ni_syscall)        // 320
+-   //   (__NR_pwritev,           sys_ni_syscall)        // 321
++   LINXY(__NR_perf_counter_open, sys_perf_counter_open),// 319
++   LINXY(__NR_preadv,            sys_preadv),           // 320
++   LINX_(__NR_pwritev,           sys_pwritev)           // 321
+    //   (__NR_rt_tgsigqueueinfo, sys_ni_syscall)        // 322
+ };
+ 

@@ -1,0 +1,486 @@
+--- valgrind/VEX/priv/guest_amd64_toIR.c.jj	2009-10-21 22:46:40.000000000 +0200
++++ valgrind/VEX/priv/guest_amd64_toIR.c	2009-10-27 20:33:43.000000000 +0100
+@@ -14278,18 +14278,20 @@ DisResult disInstr_AMD64_WRK ( 
+       if (haveF2orF3(pfx)) goto decode_failure;
+       delta = dis_op_imm_A( 1, True, Iop_Add8, True, delta, "adc" );
+       break;
+-//.. //--    case 0x15: /* ADC Iv, eAX */
+-//.. //--       delta = dis_op_imm_A( sz, ADC, True, delta, "adc" );
+-//.. //--       break;
++   case 0x15: /* ADC Iv, eAX */
++      if (haveF2orF3(pfx)) goto decode_failure;
++      delta = dis_op_imm_A( sz, True, Iop_Add8, True, delta, "adc" );
++      break;
+ 
+    case 0x1C: /* SBB Ib, AL */
+       if (haveF2orF3(pfx)) goto decode_failure;
+       delta = dis_op_imm_A( 1, True, Iop_Sub8, True, delta, "sbb" );
+       break;
+-//.. //--    case 0x1D: /* SBB Iv, eAX */
+-//.. //--       delta = dis_op_imm_A( sz, SBB, True, delta, "sbb" );
+-//.. //--       break;
+-//.. //-- 
++   case 0x1D: /* SBB Iv, eAX */
++      if (haveF2orF3(pfx)) goto decode_failure;
++      delta = dis_op_imm_A( sz, True, Iop_Sub8, True, delta, "sbb" );
++      break;
++
+    case 0x24: /* AND Ib, AL */
+       if (haveF2orF3(pfx)) goto decode_failure;
+       delta = dis_op_imm_A( 1, False, Iop_And8, True, delta, "and" );
+@@ -14364,9 +14366,10 @@ DisResult disInstr_AMD64_WRK ( 
+       delta = dis_op2_E_G ( vbi, pfx, True, Iop_Add8, True, sz, delta, "adc" );
+       break;
+ 
+-//.. //--    case 0x1A: /* SBB Eb,Gb */
+-//.. //--       delta = dis_op2_E_G ( sorb, True, SBB, True, 1, delta, "sbb" );
+-//.. //--       break;
++   case 0x1A: /* SBB Eb,Gb */
++      if (haveF2orF3(pfx)) goto decode_failure;
++      delta = dis_op2_E_G ( vbi, pfx, True, Iop_Sub8, True, 1, delta, "sbb" );
++      break;
+    case 0x1B: /* SBB Ev,Gv */
+       if (haveF2orF3(pfx)) goto decode_failure;
+       delta = dis_op2_E_G ( vbi, pfx, True, Iop_Sub8, True, sz, delta, "sbb" );
+--- valgrind/none/tests/x86/sbbmisc.stdout.exp.jj	2009-10-09 12:52:02.000000000 +0200
++++ valgrind/none/tests/x86/sbbmisc.stdout.exp	2009-10-27 20:50:15.000000000 +0100
+@@ -5,3 +5,6 @@ r4 = 11 10
+ r5 = -11 -12
+ r6 = -69 -68
+ r7 = -113 -112
++r8 = 104 105
++r9 = -14982 -14981
++r10 = -267879790 -267879789
+--- valgrind/none/tests/x86/sbbmisc.c.jj	2009-10-09 12:52:02.000000000 +0200
++++ valgrind/none/tests/x86/sbbmisc.c	2009-10-27 20:48:00.000000000 +0100
+@@ -140,7 +140,58 @@ VG_SYM(adc_eb_gb_2) ":\n"
+ "\tret\n"
+ );
+ 
++extern void adc_ib_al ( void );
++asm("\n"
++VG_SYM(adc_ib_al) ":\n"
++
++"\tmovb " VG_SYM(in_b) ", %al\n"
++"\tclc\n"
++"\tadcb $5, %al\n"
++"\tmovb %al, " VG_SYM(out_b1) "\n"
++
++"\tmovb " VG_SYM(in_b) ", %al\n"
++"\tstc\n"
++"\tadcb $5, %al\n"
++"\tmovb %al, " VG_SYM(out_b2) "\n"
+ 
++"\tret\n"
++);
++
++
++extern void adc_iw_ax ( void );
++asm("\n"
++VG_SYM(adc_iw_ax) ":\n"
++
++"\tmovw " VG_SYM(in_w) ", %ax\n"
++"\tclc\n"
++"\tadcw $555, %ax\n"
++"\tmovw %ax, " VG_SYM(out_w1) "\n"
++
++"\tmovw " VG_SYM(in_w) ", %ax\n"
++"\tstc\n"
++"\tadcw $555, %ax\n"
++"\tmovw %ax, " VG_SYM(out_w2) "\n"
++
++"\tret\n"
++);
++
++
++extern void adc_il_eax ( void );
++asm("\n"
++VG_SYM(adc_il_eax) ":\n"
++
++"\tmovl " VG_SYM(in_l) ", %eax\n"
++"\tclc\n"
++"\tadcl $555666, %eax\n"
++"\tmovl %eax, " VG_SYM(out_l1) "\n"
++
++"\tmovl " VG_SYM(in_l) ", %eax\n"
++"\tstc\n"
++"\tadcl $555666, %eax\n"
++"\tmovl %eax, " VG_SYM(out_l2) "\n"
++
++"\tret\n"
++);
+ 
+ 
+ int main ( void )
+@@ -177,5 +228,17 @@ int main ( void )
+    adc_eb_gb_2();
+    printf("r7 = %d %d\n", (int)out_b1, (int)out_b2);
+ 
++   in_b = 99;
++   adc_ib_al();
++   printf("r8 = %d %d\n", (int)out_b1, (int)out_b2);
++
++   in_w = 49999;
++   adc_iw_ax();
++   printf("r9 = %d %d\n", (int)out_w1, (int)out_w2);
++
++   in_l = 0xF0000000;
++   adc_il_eax();
++   printf("r10 = %d %d\n", (int)out_l1, (int)out_l2);
++
+    return 0;
+ }
+--- valgrind/none/tests/amd64/sbbmisc.vgtest.jj	2009-10-27 20:50:44.000000000 +0100
++++ valgrind/none/tests/amd64/sbbmisc.vgtest	2009-10-09 12:52:02.000000000 +0200
+@@ -0,0 +1 @@
++prog: sbbmisc
+--- valgrind/none/tests/amd64/sbbmisc.stdout.exp.jj	2009-10-27 20:50:41.000000000 +0100
++++ valgrind/none/tests/amd64/sbbmisc.stdout.exp	2009-10-27 20:50:15.000000000 +0100
+@@ -0,0 +1,10 @@
++r1 = 94 93
++r2 = -16092 -16093
++r3 = -268991122 -268991123
++r4 = 11 10
++r5 = -11 -12
++r6 = -69 -68
++r7 = -113 -112
++r8 = 104 105
++r9 = -14982 -14981
++r10 = -267879790 -267879789
+--- valgrind/none/tests/amd64/Makefile.am.jj	2009-10-09 12:52:01.000000000 +0200
++++ valgrind/none/tests/amd64/Makefile.am	2009-10-27 20:55:27.000000000 +0100
+@@ -43,6 +43,7 @@ EXTRA_DIST = \
+ 	redundantRexW.vgtest redundantRexW.stdout.exp \
+ 	redundantRexW.stderr.exp \
+ 	smc1.stderr.exp smc1.stdout.exp smc1.vgtest \
++	sbbmisc.stderr.exp sbbmisc.stdout.exp sbbmisc.vgtest \
+ 	shrld.stderr.exp shrld.stdout.exp shrld.vgtest \
+ 	ssse3_misaligned.stderr.exp ssse3_misaligned.stdout.exp \
+ 	ssse3_misaligned.vgtest \
+@@ -58,6 +59,7 @@ check_PROGRAMS = \
+ 	rcl-amd64 \
+ 	redundantRexW \
+ 	smc1 \
++	sbbmisc \
+ 	nibz_bennee_mmap
+ if BUILD_SSSE3_TESTS
+  check_PROGRAMS += ssse3_misaligned
+--- valgrind/none/tests/amd64/Makefile.in.jj	2009-10-09 12:52:33.000000000 +0200
++++ valgrind/none/tests/amd64/Makefile.in	2009-10-27 20:56:47.000000000 +0100
+@@ -53,8 +53,8 @@ DIST_COMMON = $(dist_noinst_SCRIPTS) $(s
+ check_PROGRAMS = amd64locked$(EXEEXT) bug127521-64$(EXEEXT) \
+ 	bug132813-amd64$(EXEEXT) bug132918$(EXEEXT) clc$(EXEEXT) \
+ 	$(am__EXEEXT_3) rcl-amd64$(EXEEXT) redundantRexW$(EXEEXT) \
+-	smc1$(EXEEXT) nibz_bennee_mmap$(EXEEXT) $(am__EXEEXT_4) \
+-	$(am__EXEEXT_5)
++	smc1$(EXEEXT) sbbmisc$(EXEEXT) nibz_bennee_mmap$(EXEEXT) \
++	$(am__EXEEXT_4) $(am__EXEEXT_5)
+ @BUILD_SSSE3_TESTS_TRUE@am__append_3 = ssse3_misaligned
+ 
+ # DDD: these need to be made to work on Darwin like the x86/ ones were.
+@@ -169,6 +169,9 @@ slahf_amd64_LDADD = $(LDADD)
+ smc1_SOURCES = smc1.c
+ smc1_OBJECTS = smc1.$(OBJEXT)
+ smc1_LDADD = $(LDADD)
++sbbmisc_SOURCES = sbbmisc.c
++sbbmisc_OBJECTS = sbbmisc.$(OBJEXT)
++sbbmisc_LDADD = $(LDADD)
+ ssse3_misaligned_SOURCES = ssse3_misaligned.c
+ ssse3_misaligned_OBJECTS = ssse3_misaligned.$(OBJEXT)
+ ssse3_misaligned_LDADD = $(LDADD)
+@@ -186,7 +189,7 @@ SOURCES = amd64locked.c bug127521-64.c b
+ 	$(insn_mmx_SOURCES) $(insn_sse_SOURCES) $(insn_sse2_SOURCES) \
+ 	$(insn_sse3_SOURCES) $(insn_ssse3_SOURCES) jrcxz.c looper.c \
+ 	loopnel.c nibz_bennee_mmap.c rcl-amd64.c redundantRexW.c \
+-	shrld.c slahf-amd64.c smc1.c ssse3_misaligned.c
++	shrld.c slahf-amd64.c smc1.c sbbmisc.c ssse3_misaligned.c
+ DIST_SOURCES = amd64locked.c bug127521-64.c bug132813-amd64.c \
+ 	bug132918.c bug137714-amd64.c bug156404-amd64.c clc.c \
+ 	faultstatus.c fcmovnu.c fxtract.c $(insn_basic_SOURCES) \
+@@ -194,7 +197,7 @@ DIST_SOURCES = amd64locked.c bug127521-6
+ 	$(insn_sse2_SOURCES) $(insn_sse3_SOURCES) \
+ 	$(insn_ssse3_SOURCES) jrcxz.c looper.c loopnel.c \
+ 	nibz_bennee_mmap.c rcl-amd64.c redundantRexW.c shrld.c \
+-	slahf-amd64.c smc1.c ssse3_misaligned.c
++	slahf-amd64.c smc1.c sbbmisc.c ssse3_misaligned.c
+ ETAGS = etags
+ CTAGS = ctags
+ DISTFILES = $(DIST_COMMON) $(DIST_SOURCES) $(TEXINFOS) $(EXTRA_DIST)
+@@ -548,6 +551,7 @@ EXTRA_DIST = \
+ 	redundantRexW.vgtest redundantRexW.stdout.exp \
+ 	redundantRexW.stderr.exp \
+ 	smc1.stderr.exp smc1.stdout.exp smc1.vgtest \
++	sbbmisc.stderr.exp sbbmisc.stdout.exp sbbmisc.vgtest \
+ 	shrld.stderr.exp shrld.stdout.exp shrld.vgtest \
+ 	ssse3_misaligned.stderr.exp ssse3_misaligned.stdout.exp \
+ 	ssse3_misaligned.vgtest \
+@@ -688,6 +692,9 @@ slahf-amd64$(EXEEXT): $(slahf_amd64_OBJE
+ smc1$(EXEEXT): $(smc1_OBJECTS) $(smc1_DEPENDENCIES) 
+ 	@rm -f smc1$(EXEEXT)
+ 	$(LINK) $(smc1_LDFLAGS) $(smc1_OBJECTS) $(smc1_LDADD) $(LIBS)
++sbbmisc$(EXEEXT): $(sbbmisc_OBJECTS) $(sbbmisc_DEPENDENCIES) 
++	@rm -f sbbmisc$(EXEEXT)
++	$(LINK) $(sbbmisc_LDFLAGS) $(sbbmisc_OBJECTS) $(sbbmisc_LDADD) $(LIBS)
+ ssse3_misaligned$(EXEEXT): $(ssse3_misaligned_OBJECTS) $(ssse3_misaligned_DEPENDENCIES) 
+ 	@rm -f ssse3_misaligned$(EXEEXT)
+ 	$(LINK) $(ssse3_misaligned_LDFLAGS) $(ssse3_misaligned_OBJECTS) $(ssse3_misaligned_LDADD) $(LIBS)
+@@ -724,6 +731,7 @@ distclean-compile:
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/shrld.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/slahf-amd64.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/smc1.Po@am__quote@
++@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/sbbmisc.Po@am__quote@
+ @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/ssse3_misaligned.Po@am__quote@
+ 
+ .c.o:
+--- valgrind/none/tests/amd64/sbbmisc.c.jj	2009-10-27 20:50:36.000000000 +0100
++++ valgrind/none/tests/amd64/sbbmisc.c	2009-10-27 20:51:57.000000000 +0100
+@@ -0,0 +1,244 @@
++#include "tests/asm.h"
++#include <stdio.h>
++
++char in_b, out_b1, out_b2, in_b2;
++
++short in_w, out_w1, out_w2;
++
++int in_l, out_l1, out_l2;
++
++extern void sbb_ib_al ( void );
++asm("\n"
++VG_SYM(sbb_ib_al) ":\n"
++
++"\tmovb " VG_SYM(in_b) ", %al\n"
++"\tclc\n"
++"\tsbbb $5, %al\n"
++"\tmovb %al, " VG_SYM(out_b1) "\n"
++
++"\tmovb " VG_SYM(in_b) ", %al\n"
++"\tstc\n"
++"\tsbbb $5, %al\n"
++"\tmovb %al, " VG_SYM(out_b2) "\n"
++
++"\tretq\n"
++);
++
++
++extern void sbb_iw_ax ( void );
++asm("\n"
++VG_SYM(sbb_iw_ax) ":\n"
++
++"\tmovw " VG_SYM(in_w) ", %ax\n"
++"\tclc\n"
++"\tsbbw $555, %ax\n"
++"\tmovw %ax, " VG_SYM(out_w1) "\n"
++
++"\tmovw " VG_SYM(in_w) ", %ax\n"
++"\tstc\n"
++"\tsbbw $555, %ax\n"
++"\tmovw %ax, " VG_SYM(out_w2) "\n"
++
++"\tretq\n"
++);
++
++
++extern void sbb_il_eax ( void );
++asm("\n"
++VG_SYM(sbb_il_eax) ":\n"
++
++"\tmovl " VG_SYM(in_l) ", %eax\n"
++"\tclc\n"
++"\tsbbl $555666, %eax\n"
++"\tmovl %eax, " VG_SYM(out_l1) "\n"
++
++"\tmovl " VG_SYM(in_l) ", %eax\n"
++"\tstc\n"
++"\tsbbl $555666, %eax\n"
++"\tmovl %eax, " VG_SYM(out_l2) "\n"
++
++"\tretq\n"
++);
++
++
++extern void sbb_eb_gb ( void );
++asm("\n"
++VG_SYM(sbb_eb_gb) ":\n"
++
++"\tmovb " VG_SYM(in_b) ", %al\n"
++"\tclc\n"
++"\tsbbb " VG_SYM(in_b2) ", %al\n"
++"\tmovb %al, " VG_SYM(out_b1) "\n"
++
++"\tmovb " VG_SYM(in_b) ", %al\n"
++"\tstc\n"
++"\tsbbb " VG_SYM(in_b2) ", %al\n"
++"\tmovb %al, " VG_SYM(out_b2) "\n"
++
++"\tretq\n"
++);
++
++
++extern void sbb_eb_gb_2 ( void );
++asm("\n"
++VG_SYM(sbb_eb_gb_2) ":\n"
++"\tpushq %rcx\n"
++
++"\tmovb " VG_SYM(in_b) ", %cl\n"
++"\tmovb " VG_SYM(in_b2) ", %dh\n"
++"\tclc\n"
++"\tsbbb %dh,%cl\n"
++"\tmovb %cl, " VG_SYM(out_b1) "\n"
++
++"\tmovb " VG_SYM(in_b) ", %cl\n"
++"\tmovb " VG_SYM(in_b2) ", %dh\n"
++"\tstc\n"
++"\tsbbb %dh,%cl\n"
++"\tmovb %cl, " VG_SYM(out_b2) "\n"
++
++"\tpopq %rcx\n"
++"\tretq\n"
++);
++
++
++extern void adc_eb_gb ( void );
++asm("\n"
++VG_SYM(adc_eb_gb) ":\n"
++
++"\tmovb " VG_SYM(in_b) ", %al\n"
++"\tclc\n"
++"\tadcb " VG_SYM(in_b2) ", %al\n"
++"\tmovb %al, " VG_SYM(out_b1) "\n"
++
++"\tmovb " VG_SYM(in_b) ", %al\n"
++"\tstc\n"
++"\tadcb " VG_SYM(in_b2) ", %al\n"
++"\tmovb %al, " VG_SYM(out_b2) "\n"
++
++"\tretq\n"
++);
++
++
++extern void adc_eb_gb_2 ( void );
++asm("\n"
++VG_SYM(adc_eb_gb_2) ":\n"
++"\tpushq %rcx\n"
++
++"\tmovb " VG_SYM(in_b) ", %cl\n"
++"\tmovb " VG_SYM(in_b2) ", %dh\n"
++"\tclc\n"
++"\tadcb %dh,%cl\n"
++"\tmovb %cl, " VG_SYM(out_b1) "\n"
++
++"\tmovb " VG_SYM(in_b) ", %cl\n"
++"\tmovb " VG_SYM(in_b2) ", %dh\n"
++"\tstc\n"
++"\tadcb %dh,%cl\n"
++"\tmovb %cl, " VG_SYM(out_b2) "\n"
++
++"\tpopq %rcx\n"
++"\tretq\n"
++);
++
++extern void adc_ib_al ( void );
++asm("\n"
++VG_SYM(adc_ib_al) ":\n"
++
++"\tmovb " VG_SYM(in_b) ", %al\n"
++"\tclc\n"
++"\tadcb $5, %al\n"
++"\tmovb %al, " VG_SYM(out_b1) "\n"
++
++"\tmovb " VG_SYM(in_b) ", %al\n"
++"\tstc\n"
++"\tadcb $5, %al\n"
++"\tmovb %al, " VG_SYM(out_b2) "\n"
++
++"\tretq\n"
++);
++
++
++extern void adc_iw_ax ( void );
++asm("\n"
++VG_SYM(adc_iw_ax) ":\n"
++
++"\tmovw " VG_SYM(in_w) ", %ax\n"
++"\tclc\n"
++"\tadcw $555, %ax\n"
++"\tmovw %ax, " VG_SYM(out_w1) "\n"
++
++"\tmovw " VG_SYM(in_w) ", %ax\n"
++"\tstc\n"
++"\tadcw $555, %ax\n"
++"\tmovw %ax, " VG_SYM(out_w2) "\n"
++
++"\tretq\n"
++);
++
++
++extern void adc_il_eax ( void );
++asm("\n"
++VG_SYM(adc_il_eax) ":\n"
++
++"\tmovl " VG_SYM(in_l) ", %eax\n"
++"\tclc\n"
++"\tadcl $555666, %eax\n"
++"\tmovl %eax, " VG_SYM(out_l1) "\n"
++
++"\tmovl " VG_SYM(in_l) ", %eax\n"
++"\tstc\n"
++"\tadcl $555666, %eax\n"
++"\tmovl %eax, " VG_SYM(out_l2) "\n"
++
++"\tretq\n"
++);
++
++
++int main ( void )
++{
++   in_b = 99;
++   sbb_ib_al();
++   printf("r1 = %d %d\n", (int)out_b1, (int)out_b2);
++
++   in_w = 49999;
++   sbb_iw_ax();
++   printf("r2 = %d %d\n", (int)out_w1, (int)out_w2);
++
++   in_l = 0xF0000000;
++   sbb_il_eax();
++   printf("r3 = %d %d\n", (int)out_l1, (int)out_l2);
++
++   in_b = 99;
++   in_b2 = 88;
++   sbb_eb_gb();
++   printf("r4 = %d %d\n", (int)out_b1, (int)out_b2);
++
++   in_b = 66;
++   in_b2 = 77;
++   sbb_eb_gb_2();
++   printf("r5 = %d %d\n", (int)out_b1, (int)out_b2);
++
++   in_b = 99;
++   in_b2 = 88;
++   adc_eb_gb();
++   printf("r6 = %d %d\n", (int)out_b1, (int)out_b2);
++
++   in_b = 66;
++   in_b2 = 77;
++   adc_eb_gb_2();
++   printf("r7 = %d %d\n", (int)out_b1, (int)out_b2);
++
++   in_b = 99;
++   adc_ib_al();
++   printf("r8 = %d %d\n", (int)out_b1, (int)out_b2);
++
++   in_w = 49999;
++   adc_iw_ax();
++   printf("r9 = %d %d\n", (int)out_w1, (int)out_w2);
++
++   in_l = 0xF0000000;
++   adc_il_eax();
++   printf("r10 = %d %d\n", (int)out_l1, (int)out_l2);
++
++   return 0;
++}
+--- valgrind/none/tests/amd64/sbbmisc.stderr.exp.jj	2009-10-27 20:50:39.000000000 +0100
++++ valgrind/none/tests/amd64/sbbmisc.stderr.exp	2009-10-09 12:52:02.000000000 +0200
+@@ -0,0 +1,2 @@
++
++

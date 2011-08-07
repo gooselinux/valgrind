@@ -1,0 +1,537 @@
+--- valgrind/coregrind/m_debuginfo/readdwarf.c.jj	2010-04-07 11:10:52.000000000 +0200
++++ valgrind/coregrind/m_debuginfo/readdwarf.c	2010-04-07 12:34:56.000000000 +0200
+@@ -1,6 +1,6 @@
+ 
+ /*--------------------------------------------------------------------*/
+-/*--- Read DWARF1/2/3 debug info.                      readdwarf.c ---*/
++/*--- Read DWARF1/2/3/4 debug info.                    readdwarf.c ---*/
+ /*--------------------------------------------------------------------*/
+ 
+ /*
+@@ -139,6 +139,7 @@ typedef struct
+   UShort li_version;
+   ULong  li_header_length;
+   UChar  li_min_insn_length;
++  UChar  li_max_ops_per_insn;
+   UChar  li_default_is_stmt;
+   Int    li_line_base;
+   UChar  li_line_range;
+@@ -182,7 +183,8 @@ enum dwarf_line_number_x_ops
+   {
+     DW_LNE_end_sequence = 1,
+     DW_LNE_set_address = 2,
+-    DW_LNE_define_file = 3
++    DW_LNE_define_file = 3,
++    DW_LNE_set_discriminator = 4
+   };
+ 
+ typedef struct
+@@ -199,7 +201,8 @@ typedef struct
+   UInt  column;
+   Int   is_stmt;
+   Int   basic_block;
+-  Int   end_sequence;
++  UChar end_sequence;
++  UChar op_index;
+ } LineSMR;
+ 
+ 
+@@ -302,6 +305,7 @@ void reset_state_machine ( Int is_stmt )
+    state_machine_regs.is_stmt = is_stmt;
+    state_machine_regs.basic_block = 0;
+    state_machine_regs.end_sequence = 0;
++   state_machine_regs.op_index = 0;
+ }
+ 
+ /* Look up a directory name, or return NULL if unknown. */
+@@ -393,6 +397,7 @@ Word process_extended_line_op( struct _D
+       case DW_LNE_set_address:
+          adr = *((Addr *)data);
+          state_machine_regs.address = adr;
++         state_machine_regs.op_index = 0;
+          if (di->ddump_line)
+             VG_(printf)("  Extended opcode %d: set Address to 0x%lx\n",
+                         (Int)op_code, (Addr)adr);
+@@ -411,6 +416,11 @@ Word process_extended_line_op( struct _D
+             VG_(printf)("  DWARF2-line: set_address\n");
+          break;
+ 
++      case DW_LNE_set_discriminator:
++         read_leb128 (data, & bytes_read, 0);
++         data += bytes_read;
++         break;
++
+       default:
+          if (di->ddump_line)
+             VG_(printf)("process_extended_line_op:default\n");
+@@ -513,9 +523,9 @@ void read_dwarf2_lineblock ( struct _Deb
+       VG_(printf)("  DWARF Version:               %d\n", 
+                   (Int)info.li_version);
+ 
+-   if (info.li_version != 2 && info.li_version != 3) {
++   if (info.li_version != 2 && info.li_version != 3 && info.li_version != 4) {
+       ML_(symerr)(di, True,
+-                  "Only DWARF version 2 and 3 line info "
++                  "Only DWARF version 2, 3 and 4 line info "
+                   "is currently supported.");
+       goto out;
+    }
+@@ -533,6 +543,20 @@ void read_dwarf2_lineblock ( struct _Deb
+       VG_(printf)("  Minimum Instruction Length:  %d\n", 
+                   (Int)info.li_min_insn_length);
+ 
++   if (info.li_version >= 4) {
++      info.li_max_ops_per_insn = * ((UChar *)external);
++      if (info.li_max_ops_per_insn == 0) {
++         ML_(symerr)(di, True,
++                     "Invalid Maximum Ops Per Insn in line info.");
++         goto out;
++      }
++      external += 1;
++      if (di->ddump_line)
++         VG_(printf)("  Maximum Ops Per Insn:        %d\n", 
++                  (Int)info.li_max_ops_per_insn);
++   } else
++      info.li_max_ops_per_insn = 1;
++
+    info.li_default_is_stmt = * ((UChar *)external);
+    external += 1;
+    if (di->ddump_line)
+@@ -714,10 +738,18 @@ void read_dwarf2_lineblock ( struct _Deb
+ 
+          Int advAddr;
+          op_code -= info.li_opcode_base;
+-         adv      = (op_code / info.li_line_range) 
+-                       * info.li_min_insn_length;
+-         advAddr = adv;
+-         state_machine_regs.address += adv;
++         adv      = (op_code / info.li_line_range);
++         if (info.li_max_ops_per_insn == 1) {
++            adv *= info.li_min_insn_length;
++            advAddr = adv;
++            state_machine_regs.address += adv;
++         } else {
++            advAddr = ((state_machine_regs.op_index + adv)
++                       / info.li_max_ops_per_insn) * info.li_min_insn_length;
++            state_machine_regs.address += advAddr;
++            state_machine_regs.op_index = (state_machine_regs.op_index + adv)
++                                          % info.li_max_ops_per_insn;
++         }
+ 
+          if (0) VG_(printf)("smr.a += %#x\n", adv );
+          adv = (op_code % info.li_line_range) + info.li_line_base;
+@@ -800,10 +832,19 @@ void read_dwarf2_lineblock ( struct _Deb
+             break;
+ 
+          case DW_LNS_advance_pc:
+-            adv = info.li_min_insn_length 
+-                     * read_leb128 (data, & bytes_read, 0);
++            adv = read_leb128 (data, & bytes_read, 0);
+             data += bytes_read;
+-            state_machine_regs.address += adv;
++            if (info.li_max_ops_per_insn == 1) {
++               adv *= info.li_min_insn_length;
++               state_machine_regs.address += adv;
++            } else {
++               state_machine_regs.address
++                 += ((state_machine_regs.op_index + adv)
++                     / info.li_max_ops_per_insn) * info.li_min_insn_length;
++               state_machine_regs.op_index
++                 = (state_machine_regs.op_index + adv)
++                   % info.li_max_ops_per_insn;
++            }
+             if (0) VG_(printf)("smr.a += %#x\n", adv );
+             if (di->ddump_line)
+                VG_(printf)("  Advance PC by %d to 0x%lx\n", 
+@@ -851,9 +892,18 @@ void read_dwarf2_lineblock ( struct _Deb
+             break;
+ 
+          case DW_LNS_const_add_pc:
+-            adv = (((255 - info.li_opcode_base) / info.li_line_range)
+-                   * info.li_min_insn_length);
+-            state_machine_regs.address += adv;
++            adv = ((255 - info.li_opcode_base) / info.li_line_range);
++            if (info.li_max_ops_per_insn == 1) {
++               adv *= info.li_min_insn_length;
++               state_machine_regs.address += adv;
++            } else {
++               state_machine_regs.address
++                 += ((state_machine_regs.op_index + adv)
++                     / info.li_max_ops_per_insn) * info.li_min_insn_length;
++               state_machine_regs.op_index
++                 = (state_machine_regs.op_index + adv)
++                   % info.li_max_ops_per_insn;
++            }
+             if (0) VG_(printf)("smr.a += %#x\n", adv );
+             if (di->ddump_line)
+                VG_(printf)("  Advance PC by constant %d to 0x%lx\n", 
+@@ -865,6 +915,7 @@ void read_dwarf2_lineblock ( struct _Deb
+             adv = *((UShort *)data);
+             data += 2;
+             state_machine_regs.address += adv;
++            state_machine_regs.op_index = 0;
+             if (0) VG_(printf)("smr.a += %#x\n", adv );
+             if (di->ddump_line)
+                VG_(printf)("  DWARF2-line: fixed_advance_pc\n");
+@@ -979,7 +1030,7 @@ void read_unitinfo_dwarf2( /*OUT*/UnitIn
+    blklen = read_initial_length_field( p, &ui->dw64 );
+    p += ui->dw64 ? 12 : 4;
+ 
+-   /* version should be 2 */
++   /* version should be 2, 3 or 4 */
+    ver = *((UShort*)p);
+    p += 2;
+ 
+@@ -1066,7 +1117,11 @@ void read_unitinfo_dwarf2( /*OUT*/UnitIn
+             case 0x08: /* FORM_string */    sval = (Char*)p; 
+                                             p += VG_(strlen)((Char*)p) + 1; break;
+             case 0x0b: /* FORM_data1 */     cval = *p; p++; break;
+-            
++            case 0x17: /* FORM_sec_offset */if (ui->dw64) {
++                                               cval = *((ULong*)p); p += 8; break;
++                                            }
++                                            cval = *((UInt*)p); p += 4; break;
++
+             /* TODO : Following ones just skip data - implement if you need */
+             case 0x01: /* FORM_addr */      p += addr_size; break;
+             case 0x03: /* FORM_block2 */    p += *((UShort*)p) + 2; break;
+@@ -1085,7 +1140,10 @@ void read_unitinfo_dwarf2( /*OUT*/UnitIn
+             case 0x13: /* FORM_ref4 */      p += 4; break;
+             case 0x14: /* FORM_ref8 */      p += 8; break;
+             case 0x15: /* FORM_ref_udata */ read_leb128U( &p ); break;
+-            
++            case 0x18: /* FORM_exprloc */   p += read_leb128U( &p ); break;
++            case 0x19: /* FORM_flag_present */break;
++            case 0x20: /* FORM_ref_sig8 */  p += 8; break;
++
+             default:
+                VG_(printf)( "### unhandled dwarf2 abbrev form code 0x%x\n", form );
+                break;
+@@ -1163,9 +1221,9 @@ void ML_(read_debuginfo_dwarf3)
+ 
+       /* version should be 2 */
+       ver = *((UShort*)( block_img + blklen_len ));
+-      if ( ver != 2 && ver != 3 ) {
++      if ( ver != 2 && ver != 3 && ver != 4 ) {
+          ML_(symerr)( di, True,
+-                      "Ignoring non-Dwarf2/3 block in .debug_info" );
++                      "Ignoring non-Dwarf2/3/4 block in .debug_info" );
+          continue;
+       }
+       
+@@ -3705,8 +3763,8 @@ void ML_(read_callframe_info_dwarf3)
+             VG_(printf)("cie.version     = %d\n", (Int)cie_version);
+          if (di->ddump_frames)
+             VG_(printf)("  Version:               %d\n", (Int)cie_version);
+-         if (cie_version != 1 && cie_version != 3) {
+-            how = "unexpected CIE version (not 1 nor 3)";
++         if (cie_version != 1 && cie_version != 3 && cie_version != 4) {
++            how = "unexpected CIE version (not 1 nor 3 nor 4)";
+             goto bad;
+          }
+ 
+@@ -3722,6 +3780,19 @@ void ML_(read_callframe_info_dwarf3)
+             cie_augmentation += 2;
+          }
+ 
++         if (cie_version >= 4) {
++            if (read_UChar(data) != sizeof(Addr)) {
++               how = "unexpected address size";
++               goto bad;
++            }
++            data += sizeof(UChar);
++            if (read_UChar(data) != 0) {
++               how = "unexpected non-zero segment size";
++               goto bad;
++            }
++            data += sizeof(UChar);
++         }
++
+          the_CIEs[this_CIE].code_a_f = read_leb128( data, &nbytes, 0);
+          data += nbytes;
+          if (di->trace_cfi) 
+--- valgrind/coregrind/m_debuginfo/readdwarf3.c.jj	2010-04-07 11:10:52.000000000 +0200
++++ valgrind/coregrind/m_debuginfo/readdwarf3.c	2010-04-07 12:48:07.000000000 +0200
+@@ -1,6 +1,6 @@
+ 
+ /*--------------------------------------------------------------------*/
+-/*--- Read DWARF3 ".debug_info" sections (DIE trees).              ---*/
++/*--- Read DWARF3/4 ".debug_info" sections (DIE trees).            ---*/
+ /*---                                                 readdwarf3.c ---*/
+ /*--------------------------------------------------------------------*/
+ 
+@@ -387,7 +387,7 @@ typedef
+       void (*barf)( HChar* ) __attribute__((noreturn));
+       /* Is this 64-bit DWARF ? */
+       Bool   is_dw64;
+-      /* Which DWARF version ?  (2 or 3) */
++      /* Which DWARF version ?  (2, 3 or 4) */
+       UShort version;
+       /* Length of this Compilation Unit, as stated in the
+          .unit_length :: InitialLength field of the CU Header.
+@@ -805,8 +805,8 @@ void parse_CU_Header ( /*OUT*/CUConst* c
+ 
+    /* version */
+    cc->version = get_UShort( c );
+-   if (cc->version != 2 && cc->version != 3)
+-      cc->barf( "parse_CU_Header: is neither DWARF2 nor DWARF3" );
++   if (cc->version != 2 && cc->version != 3 && cc->version != 4)
++      cc->barf( "parse_CU_Header: is neither DWARF2 nor DWARF3 nor DWARF4" );
+    TRACE_D3("   Version:       %d\n", (Int)cc->version );
+ 
+    /* debug_abbrev_offset */
+@@ -984,11 +984,21 @@ void get_Form_contents ( /*OUT*/ULong* c
+          *ctsSzB = 8;
+          TRACE_D3("%llu", *cts);
+          break;
++      case DW_FORM_sec_offset:
++         *cts = (ULong)get_Dwarfish_UWord( c, cc->is_dw64 );
++         *ctsSzB = cc->is_dw64 ? 8 : 4;
++         TRACE_D3("%llu", *cts);
++         break;
+       case DW_FORM_sdata:
+          *cts = (ULong)(Long)get_SLEB128(c);
+          *ctsSzB = 8;
+          TRACE_D3("%lld", (Long)*cts);
+          break;
++      case DW_FORM_udata:
++         *cts = (ULong)(Long)get_ULEB128(c);
++         *ctsSzB = 8;
++         TRACE_D3("%llu", (Long)*cts);
++         break;
+       case DW_FORM_addr:
+          /* note, this is a hack.  DW_FORM_addr is defined as getting
+             a word the size of the target machine as defined by the
+@@ -1055,6 +1065,22 @@ void get_Form_contents ( /*OUT*/ULong* c
+          *ctsMemSzB = 1 + (ULong)VG_(strlen)(str);
+          break;
+       }
++      case DW_FORM_ref1: {
++         UChar  u8 = get_UChar(c);
++         UWord res = cc->cu_start_offset + (UWord)u8;
++         *cts = (ULong)res;
++         *ctsSzB = sizeof(UWord);
++         TRACE_D3("<%lx>", res);
++         break;
++      }
++      case DW_FORM_ref2: {
++         UShort  u16 = get_UShort(c);
++         UWord res = cc->cu_start_offset + (UWord)u16;
++         *cts = (ULong)res;
++         *ctsSzB = sizeof(UWord);
++         TRACE_D3("<%lx>", res);
++         break;
++      }
+       case DW_FORM_ref4: {
+          UInt  u32 = get_UInt(c);
+          UWord res = cc->cu_start_offset + (UWord)u32;
+@@ -1063,6 +1089,22 @@ void get_Form_contents ( /*OUT*/ULong* c
+          TRACE_D3("<%lx>", res);
+          break;
+       }
++      case DW_FORM_ref8: {
++         ULong  u64 = get_ULong(c);
++         UWord res = cc->cu_start_offset + (UWord)u64;
++         *cts = (ULong)res;
++         *ctsSzB = sizeof(UWord);
++         TRACE_D3("<%lx>", res);
++         break;
++      }
++      case DW_FORM_ref_udata: {
++         ULong  u64 = get_ULEB128(c);
++         UWord res = cc->cu_start_offset + (UWord)u64;
++         *cts = (ULong)res;
++         *ctsSzB = sizeof(UWord);
++         TRACE_D3("<%lx>", res);
++         break;
++      }
+       case DW_FORM_flag: {
+          UChar u8 = get_UChar(c);
+          TRACE_D3("%u", (UInt)u8);
+@@ -1070,6 +1112,11 @@ void get_Form_contents ( /*OUT*/ULong* c
+          *ctsSzB = 1;
+          break;
+       }
++      case DW_FORM_flag_present:
++         TRACE_D3("1");
++         *cts = 1;
++         *ctsSzB = 1;
++         break;
+       case DW_FORM_block1: {
+          ULong  u64b;
+          ULong  u64 = (ULong)get_UChar(c);
+@@ -1096,6 +1143,50 @@ void get_Form_contents ( /*OUT*/ULong* c
+          *ctsMemSzB = (UWord)u64;
+          break;
+       }
++      case DW_FORM_block4: {
++         ULong  u64b;
++         ULong  u64 = (ULong)get_UInt(c);
++         UChar* block = get_address_of_Cursor(c);
++         TRACE_D3("%llu byte block: ", u64);
++         for (u64b = u64; u64b > 0; u64b--) {
++            UChar u8 = get_UChar(c);
++            TRACE_D3("%x ", (UInt)u8);
++         }
++         *cts = (ULong)(UWord)block;
++         *ctsMemSzB = (UWord)u64;
++         break;
++      }
++      case DW_FORM_exprloc:
++      case DW_FORM_block: {
++         ULong  u64b;
++         ULong  u64 = (ULong)get_ULEB128(c);
++         UChar* block = get_address_of_Cursor(c);
++         TRACE_D3("%llu byte block: ", u64);
++         for (u64b = u64; u64b > 0; u64b--) {
++            UChar u8 = get_UChar(c);
++            TRACE_D3("%x ", (UInt)u8);
++         }
++         *cts = (ULong)(UWord)block;
++         *ctsMemSzB = (UWord)u64;
++         break;
++      }
++      case DW_FORM_ref_sig8: {
++         ULong  u64b;
++         UChar* block = get_address_of_Cursor(c);
++         TRACE_D3("8 byte signature: ");
++         for (u64b = 8; u64b > 0; u64b--) {
++            UChar u8 = get_UChar(c);
++            TRACE_D3("%x ", (UInt)u8);
++         }
++         *cts = (ULong)(UWord)block;
++         *ctsMemSzB = 8;
++         break;
++      }
++      case DW_FORM_indirect:
++         get_Form_contents (cts, ctsSzB, ctsMemSzB, cc, c, td3,
++                            (DW_FORM)get_ULEB128(c));
++         return;
++
+       default:
+          VG_(printf)(
+             "get_Form_contents: unhandled %d (%s) at <%lx>\n",
+@@ -1322,11 +1413,13 @@ void read_filename_table( /*MOD*/D3VarPa
+       get_Initial_Length( &is_dw64, &c,
+            "read_filename_table: invalid initial-length field" );
+    version = get_UShort( &c );
+-   if (version != 2 && version != 3)
+-     cc->barf("read_filename_table: Only DWARF version 2 and 3 line info "
++   if (version != 2 && version != 3 && version != 4)
++     cc->barf("read_filename_table: Only DWARF version 2, 3 and 4 line info "
+               "is currently supported.");
+    /*header_length              = (ULong)*/ get_Dwarfish_UWord( &c, is_dw64 );
+    /*minimum_instruction_length = */ get_UChar( &c );
++   if (version >= 4)
++      /*maximum_operations_per_insn = */ get_UChar( &c );
+    /*default_is_stmt            = */ get_UChar( &c );
+    /*line_base                  = (Char)*/ get_UChar( &c );
+    /*line_range                 = */ get_UChar( &c );
+@@ -2025,7 +2118,7 @@ static void parse_type_DIE ( /*MOD*/XArr
+             case DW_LANG_C89: case DW_LANG_C:
+             case DW_LANG_C_plus_plus: case DW_LANG_ObjC:
+             case DW_LANG_ObjC_plus_plus: case DW_LANG_UPC:
+-            case DW_LANG_Upc:
++            case DW_LANG_Upc: case DW_LANG_C99:
+                parser->language = 'C'; break;
+             case DW_LANG_Fortran77: case DW_LANG_Fortran90:
+             case DW_LANG_Fortran95:
+@@ -2033,8 +2126,8 @@ static void parse_type_DIE ( /*MOD*/XArr
+             case DW_LANG_Ada83: case DW_LANG_Cobol74:
+             case DW_LANG_Cobol85: case DW_LANG_Pascal83:
+             case DW_LANG_Modula2: case DW_LANG_Java:
+-            case DW_LANG_C99: case DW_LANG_Ada95:
+-            case DW_LANG_PLI: case DW_LANG_D:
++            case DW_LANG_Ada95: case DW_LANG_PLI:
++            case DW_LANG_D: case DW_LANG_Python:
+             case DW_LANG_Mips_Assembler:
+                parser->language = '?'; break;
+             default:
+--- valgrind/coregrind/m_debuginfo/priv_d3basics.h.jj	2010-04-07 11:10:52.000000000 +0200
++++ valgrind/coregrind/m_debuginfo/priv_d3basics.h	2010-04-07 11:50:45.000000000 +0200
+@@ -104,6 +104,10 @@ typedef enum 
+     DW_TAG_imported_unit = 0x3d,
+     DW_TAG_condition = 0x3f,
+     DW_TAG_shared_type = 0x40,
++    /* DWARF 4.  */
++    DW_TAG_type_unit = 0x41,
++    DW_TAG_rvalue_reference_type = 0x42,
++    DW_TAG_template_alias = 0x43,
+     /* SGI/MIPS Extensions.  */
+     DW_TAG_MIPS_loop = 0x4081,
+     /* HP extensions.  See: ftp://ftp.hp.com/pub/lang/tools/WDB/wdb-4.0.tar.gz .  */
+@@ -158,6 +162,8 @@ typedef enum dwarf_source_language
+     DW_LANG_ObjC_plus_plus = 0x0011,
+     DW_LANG_UPC = 0x0012,
+     DW_LANG_D = 0x0013,
++    /* DWARF 4.  */
++    DW_LANG_Python = 0x0014,
+     /* MIPS.  */
+     DW_LANG_Mips_Assembler = 0x8001,
+     /* UPC.  */
+@@ -188,7 +194,12 @@ typedef enum
+     DW_FORM_ref4 = 0x13,
+     DW_FORM_ref8 = 0x14,
+     DW_FORM_ref_udata = 0x15,
+-    DW_FORM_indirect = 0x16
++    DW_FORM_indirect = 0x16,
++    /* DWARF 4 values.  */
++    DW_FORM_sec_offset = 0x17,
++    DW_FORM_exprloc = 0x18,
++    DW_FORM_flag_present = 0x19,
++    DW_FORM_ref_sig8 = 0x20
+   }
+   DW_FORM;
+ 
+@@ -285,6 +296,13 @@ typedef enum
+     DW_AT_elemental     = 0x66,
+     DW_AT_pure          = 0x67,
+     DW_AT_recursive     = 0x68,
++    /* DWARF 4 values.  */
++    DW_AT_signature       = 0x69,
++    DW_AT_main_subprogram = 0x6a,
++    DW_AT_data_bit_offset = 0x6b,
++    DW_AT_const_expr      = 0x6c,
++    DW_AT_enum_class      = 0x6d,
++    DW_AT_linkage_name    = 0x6e,
+     /* SGI/MIPS extensions.  */
+     DW_AT_MIPS_fde = 0x2001,
+     DW_AT_MIPS_loop_begin = 0x2002,
+--- valgrind/coregrind/m_debuginfo/d3basics.c.jj	2010-04-07 11:10:52.000000000 +0200
++++ valgrind/coregrind/m_debuginfo/d3basics.c	2010-04-07 11:50:45.000000000 +0200
+@@ -124,6 +124,10 @@ HChar* ML_(pp_DW_TAG) ( DW_TAG tag )
+       case DW_TAG_imported_unit:      return "DW_TAG_imported_unit";
+       case DW_TAG_condition:          return "DW_TAG_condition";
+       case DW_TAG_shared_type:        return "DW_TAG_shared_type";
++      /* DWARF 4.  */
++      case DW_TAG_type_unit:          return "DW_TAG_type_unit";
++      case DW_TAG_rvalue_reference_type: return "DW_TAG_rvalue_reference_type";
++      case DW_TAG_template_alias:     return "DW_TAG_template_alias";
+       /* SGI/MIPS Extensions.  */
+       case DW_TAG_MIPS_loop:          return "DW_TAG_MIPS_loop";
+       /* HP extensions.  See:
+@@ -172,6 +176,10 @@ HChar* ML_(pp_DW_FORM) ( DW_FORM form )
+       case DW_FORM_ref8:      return "DW_FORM_ref8";
+       case DW_FORM_ref_udata: return "DW_FORM_ref_udata";
+       case DW_FORM_indirect:  return "DW_FORM_indirect";
++      case DW_FORM_sec_offset:return "DW_FORM_sec_offset";
++      case DW_FORM_exprloc:   return "DW_FORM_exprloc";
++      case DW_FORM_flag_present:return "DW_FORM_flag_present";
++      case DW_FORM_ref_sig8:  return "DW_FORM_ref_sig8";
+       default:                return "DW_FORM_???";
+    }
+ }
+@@ -269,6 +277,13 @@ HChar* ML_(pp_DW_AT) ( DW_AT attr )
+       case DW_AT_elemental: return "DW_AT_elemental";
+       case DW_AT_pure: return "DW_AT_pure";
+       case DW_AT_recursive: return "DW_AT_recursive";
++      /* DWARF 4 values.  */
++      case DW_AT_signature: return "DW_AT_signature";
++      case DW_AT_main_subprogram: return "DW_AT_main_subprogram";
++      case DW_AT_data_bit_offset: return "DW_AT_data_bit_offset";
++      case DW_AT_const_expr: return "DW_AT_const_expr";
++      case DW_AT_enum_class: return "DW_AT_enum_class";
++      case DW_AT_linkage_name: return "DW_AT_linkage_name";
+       /* SGI/MIPS extensions.  */
+       /* case DW_AT_MIPS_fde: return "DW_AT_MIPS_fde"; */
+       /* DW_AT_MIPS_fde == DW_AT_HP_unmodifiable */
